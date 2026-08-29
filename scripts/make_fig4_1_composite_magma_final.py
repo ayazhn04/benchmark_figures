@@ -120,7 +120,7 @@ CELL_LW = 1.6
 
 card_a = [0.045, 0.365, 0.380, 0.570]
 card_b = [0.445, 0.365, 0.510, 0.570]
-card_c = [0.045, 0.070, 0.910, 0.245]
+card_c = [0.045, 0.045, 0.910, 0.290]
 
 assert abs(card_a[1] - card_b[1]) < 1e-12, "panel a/b y mismatch"
 assert abs(card_a[3] - card_b[3]) < 1e-12, "panel a/b height mismatch"
@@ -700,7 +700,7 @@ def main():
 
     add_panel_label(fig, card_a[0] + 0.007, 0.988, "a)")
     add_panel_label(fig, card_b[0] + 0.007, 0.988, "b)")
-    add_panel_label(fig, card_c[0] + 0.007, 0.352, "c)")
+    add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + 0.037, "c)")
 
     # =========================== PANEL A ====================================
     ax_, ay_, aw_, ah_ = card_a
@@ -781,22 +781,28 @@ def main():
 
     # =========================== PANEL C ====================================
     # Full-width connectivity-sensitive distributions. Positions below are
-    # tuned against card_c = [0.045, 0.070, 0.910, 0.245] and FIG_H = 10.2 in;
-    # if either changes, re-check these constants for overlap.
+    # tuned against card_c = [0.045, 0.045, 0.910, 0.290] and FIG_H = 10.2 in;
+    # if either changes, re-check these constants for overlap. Generous
+    # breathing room is deliberate at three spots that previously felt
+    # cramped: card-top-to-title, the gap between the two plot blocks, and
+    # last-xlabel-to-card-bottom.
     cx_, cy_, cw_, ch_ = card_c
 
     header_x = cx_ + 0.014
-    title_y = 0.309
-    subtitle_y = 0.2917
+    title_y = cy_ + ch_ - 0.016
+    subtitle_y = title_y - 0.0173
 
-    p1_title_y = 0.2762
-    p1_ax_y, p1_ax_h = 0.2078, 0.0527
-    # (0.1925 down to axes bottom is reserved for tick labels + xlabel, via
+    p1_title_y = subtitle_y - 0.0155
+    p1_ax_h = 0.0527
+    p1_ax_y = p1_title_y - 0.0157 - p1_ax_h
+    # (tick labels + xlabel render in the space below the axes, via
     # ax.set_xlabel with labelpad in plot_connectivity_distribution)
 
-    p2_title_y = 0.1701
-    p2_ax_y, p2_ax_h = 0.1017, 0.0527
-    # (0.0864 down to card bottom 0.070 is reserved the same way)
+    p2_title_y = p1_ax_y - 0.0557
+    p2_ax_h = 0.0527
+    p2_ax_y = p2_title_y - 0.0157 - p2_ax_h
+    # (p2_ax_y - 0.0437 lands close to the card bottom cy_, leaving a clear
+    # margin below the last xlabel + tick labels)
 
     plot_x0 = cx_ + 0.075
     plot_w2 = (cx_ + cw_ - 0.020) - plot_x0
