@@ -120,7 +120,12 @@ CELL_LW = 1.6
 
 card_a = [0.045, 0.365, 0.380, 0.570]
 card_b = [0.445, 0.365, 0.510, 0.570]
-card_c = [0.045, 0.045, 0.910, 0.290]
+card_c = [0.045, 0.012, 0.910, 0.290]
+
+# Vertical clearance between a panel label's top-anchor and the top edge of
+# the panel it names, held identical for a), b), and c) so all three labels
+# sit the same visual distance above their own panel.
+PANEL_LABEL_OFFSET = 0.053
 
 assert abs(card_a[1] - card_b[1]) < 1e-12, "panel a/b y mismatch"
 assert abs(card_a[3] - card_b[3]) < 1e-12, "panel a/b height mismatch"
@@ -698,11 +703,9 @@ def main():
     add_card(fig, card_b)
     add_card(fig, card_c)
 
-    add_panel_label(fig, card_a[0] + 0.007, 0.988, "a)")
-    add_panel_label(fig, card_b[0] + 0.007, 0.988, "b)")
-    # Anchored off card_a's bottom edge (not card_c's top) so the label can
-    # never drift into panel a/b regardless of how card_c's height is tuned.
-    add_panel_label(fig, card_c[0] + 0.007, card_a[1] - 0.006, "c)")
+    add_panel_label(fig, card_a[0] + 0.007, card_a[1] + card_a[3] + PANEL_LABEL_OFFSET, "a)")
+    add_panel_label(fig, card_b[0] + 0.007, card_b[1] + card_b[3] + PANEL_LABEL_OFFSET, "b)")
+    add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + PANEL_LABEL_OFFSET, "c)")
 
     # =========================== PANEL A ====================================
     ax_, ay_, aw_, ah_ = card_a
@@ -783,7 +786,7 @@ def main():
 
     # =========================== PANEL C ====================================
     # Full-width connectivity-sensitive distributions. Positions below are
-    # tuned against card_c = [0.045, 0.045, 0.910, 0.290] and FIG_H = 10.2 in;
+    # tuned against card_c = [0.045, 0.012, 0.910, 0.290] and FIG_H = 10.2 in;
     # if either changes, re-check these constants for overlap. Generous
     # breathing room is deliberate at three spots that previously felt
     # cramped: card-top-to-title, the gap between the two plot blocks, and
