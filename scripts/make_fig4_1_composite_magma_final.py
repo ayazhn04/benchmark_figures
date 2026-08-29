@@ -124,8 +124,11 @@ card_c = [0.045, 0.012, 0.910, 0.290]
 
 # Vertical clearance between a panel label's top-anchor and the top edge of
 # the panel it names, held identical for a), b), and c) so all three labels
-# sit the same visual distance above their own panel.
-PANEL_LABEL_OFFSET = 0.053
+# sit the same visual distance above their own panel. Kept small and, since
+# card positions above are fixed, this pulls each label closer to its own
+# panel than to whatever sits above it (avoids c) reading as if it belongs
+# to panel a).
+PANEL_LABEL_OFFSET = 0.030
 
 assert abs(card_a[1] - card_b[1]) < 1e-12, "panel a/b y mismatch"
 assert abs(card_a[3] - card_b[3]) < 1e-12, "panel a/b height mismatch"
