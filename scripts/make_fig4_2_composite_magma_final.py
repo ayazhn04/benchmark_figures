@@ -4,12 +4,18 @@
 Figure 4.2 composite (magma, final)
 Reference vs MicroLad vs SliceGAN -- three-phase NMC cathode 2D-to-3D reconstruction.
 
-Manual fixed-position layout, same visual contract as Figure 4.1
-(make_fig4_1_composite_magma_final.py): same cards, fonts, panel-label
-style, and export block. No tight_layout / constrained_layout /
-bbox_inches. Everything is derived from real volumes and real CSV tables,
-with verified Table 4.5/4.6 values used only as an explicit, logged
-fallback where the spec calls for it.
+Same visual contract as Figure 4.1 (make_fig4_1_composite_magma_final.py):
+same cards, fonts, panel-label style, and export block. No tight_layout /
+constrained_layout / bbox_inches.
+
+This revision uses ONLY the exact official standardized-input volume
+folders and the exact official long-format metric CSVs / summary tables
+named in the task -- it does not search broadly for sample folders or
+metric files. Table 4.5/4.6 values are used only as an explicit, logged
+fallback for panel c if an official summary table cannot be loaded, and
+are never used to silently replace panel-b curves (those have no
+fallback: if an official CSV is missing, the panel shows a clean
+"metric unavailable" note instead).
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ from __future__ import annotations
 import re
 import sys
 import warnings
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -37,14 +44,13 @@ warnings.filterwarnings("ignore")
 # 1. CONFIG
 # ============================================================================
 
-# Project root is auto-detected from this file's location so the script keeps
-# working no matter where the checkout lives, as long as it stays under
-# <PROJECT>/scripts/make_fig4_2_composite_magma_final.py
+# Project root is auto-detected from this file's location -- resolves to
+# /home/ra2/4.2/microlad_nmc_2d_to_3d when the script sits at
+# <PROJECT>/scripts/make_fig4_2_composite_magma_final.py, exactly as
+# specified.
 PROJECT = Path(__file__).resolve().parents[1]
 
-EVAL_DIR = PROJECT / "evaluation_4_2"
 METRICS_DIR = PROJECT / "evaluation_4_2_results_all_metrics"
-CLEAN_PACKAGE_DIR = PROJECT / "FINAL_SECTION_4_2_CLEAN_PACKAGE"
 
 OUT = PROJECT / "paper_figures_4_2" / "figure_4_2_composite_magma_final"
 TMP = OUT / "_render_cache"
@@ -52,40 +58,41 @@ LOGS = PROJECT / "logs"
 
 STEM = "fig4_2_composite_magma_final"
 
-# Internal folder / group keys stay unchanged; only the user-facing labels
-# (LABELS, below) use the paper's model names.
 GROUPS = ["real", "microlad", "slicegan"]
 
-# Keywords used to *discover* each group's sample folder under EVAL_DIR.
-# Folder names are searched robustly (case/format-insensitive substrings)
-# rather than assumed exact, per the task's "search robustly" instruction.
-GROUP_DIR_KEYWORDS = {
-    "real": ["real"],
-    "microlad": ["diffusion", "microlad"],
-    "slicegan": ["slicegan", "gan"],
+# Exact official standardized 64^3 metric-input volume folders. No broader
+# search is performed under evaluation_4_2/* -- those folders (and any
+# "_original_", "128"/"127"-sized, or CBD-middle variant) are intentionally
+# never touched by this script.
+GROUP_VOLUME_DIRS = {
+    "real": PROJECT / "evaluation_4_2_all_metrics_inputs" / "real",
+    "microlad": PROJECT / "evaluation_4_2_all_metrics_inputs" / "diffusion",
+    "slicegan": PROJECT / "evaluation_4_2_all_metrics_inputs" / "gan",
 }
 
-# Never use CBD-middle calibrated/sensitivity data for the main figure.
-EXCLUDE_PATH_TOKENS = (
-    "cbdmiddle", "cbd_middle", "calibrated", "comparisonwithcbdmiddle",
-    "comparison_with_cbdmiddle",
-)
+# Group name strings as they literally appear in the official CSVs.
+CSV_GROUP_MAP = {"real": "real", "diffusion": "microlad", "gan": "slicegan"}
+
+EXCLUDE_PATH_TOKENS = ("cbdmiddle", "cbd_middle", "calibrated", "comparisonwithcbdmiddle",
+                        "comparison_with_cbdmiddle", "original", "128", "127")
 
 VOLUME_EXTS = (".npy", ".tif", ".tiff")
-
-# Cap on how many volumes per group are loaded for aggregate stats / curves.
-# The Section 4.2 evaluation set is ~50 volumes per group; this cap keeps
-# runtime bounded even if a folder holds more.
+EXPECTED_SHAPE = (64, 64, 64)
 MAX_VOLUMES_PER_GROUP = 50
 
-# Curve-computation fallback settings (used only when no official curve CSV
-# can be resolved -- see CURVE SPECS below).
-MAX_R_VOX = 30          # max lag/segment length for TPC and lineal-path curves
-LOCAL_BLOCK = 8         # local active-fraction block size (8^3 non-overlapping)
-LOCAL_HIST_BINS = 24
+# ---- exact official metric files (long-format curves + summary tables) ----
+TPC_CSV = METRICS_DIR / "metrics" / "tpc_same_and_cross_curves.csv"
+LINEAL_CSV = METRICS_DIR / "metrics" / "lineal_path_curves.csv"
+LOCAL_FRAC_CSV = METRICS_DIR / "metrics" / "local_phase_fractions_blocks.csv"
+INTERFACE_CSV = METRICS_DIR / "tables" / "summary_interface_density.csv"
+TPC_PROXY_CSV = METRICS_DIR / "tables" / "summary_triple_phase_contact_proxy.csv"
+CONNECTIVITY_CSV = METRICS_DIR / "tables" / "summary_connectivity_topology.csv"
+CHORD_CSV = METRICS_DIR / "tables" / "summary_chord_lengths.csv"
 
-RENDER_PX = 1500        # off-screen render resolution
-CANVAS_PX = 900         # final square canvas for each 3D cell
+LOCAL_HIST_BINS = 30  # np.linspace(0, 1, 31) -> 30 bins, per spec
+
+RENDER_PX = 1500
+CANVAS_PX = 900
 
 FIG_W, FIG_H = 17.8, 10.2
 
@@ -95,29 +102,30 @@ SHOW_CURVE_ERRORS = False  # panel-b relative-error corner notes: off by default
 # 1b. SANITY-CHECK / FALLBACK CONSTANTS (verified Table 4.5 / 4.6 values)
 # ============================================================================
 
-# Table 4.5 -- phase fractions. Used only to sanity-check loaded data; the
-# script raises if a group's measured mean is farther than PHASE_TOL from
-# these in any phase.
+# Table 4.5 -- phase fractions from the exact official
+# evaluation_4_2_all_metrics_inputs folders. Used only to sanity-check
+# loaded data.
 TABLE45_PHASE_FRACTIONS = {
-    "real":     {"pore": 0.4114, "active": 0.4593, "cbd": 0.1292},
-    "microlad": {"pore": 0.4274, "active": 0.4682, "cbd": 0.1044},
-    "slicegan": {"pore": 0.4013, "active": 0.4633, "cbd": 0.1354},
+    "real":     {"pore": 0.41143517, "active": 0.45933434, "cbd": 0.12923050},
+    "microlad": {"pore": 0.42737579, "active": 0.46818214, "cbd": 0.10444206},
+    "slicegan": {"pore": 0.40131248, "active": 0.46328995, "cbd": 0.13539757},
 }
-PHASE_TOL = 0.03
+PHASE_TOL = 0.01
 
-# Table 4.6 -- interface hierarchy densities. Used as the panel c-left
-# fallback if no official per-group CSV can be resolved.
+# Table 4.6 -- interface hierarchy densities + triple-phase-contact proxy.
+# Fallback ONLY if summary_interface_density.csv / summary_triple_phase_
+# contact_proxy.csv cannot be loaded.
 TABLE46_INTERFACE = {
-    "real":     {"pore_active": 0.0000, "pore_cbd": 0.0677, "active_cbd": 0.0496, "tpc_proxy": 0.0448},
-    "microlad": {"pore_active": 0.0331, "pore_cbd": 0.0185, "active_cbd": 0.0721, "tpc_proxy": 0.0942},
-    "slicegan": {"pore_active": 0.0010, "pore_cbd": 0.0701, "active_cbd": 0.0500, "tpc_proxy": 0.0437},
+    "real":     {"pore_active": 0.0000, "pore_cbd": 0.0677, "active_cbd": 0.0496, "tpc_proxy": 0.044845},
+    "microlad": {"pore_active": 0.033132, "pore_cbd": 0.018456, "active_cbd": 0.072058, "tpc_proxy": 0.094238},
+    "slicegan": {"pore_active": 0.0010, "pore_cbd": 0.0701, "active_cbd": 0.0500, "tpc_proxy": 0.043716},
 }
 
 # Table 4.6 -- active-domain continuity. CRITICAL: per the task's explicit
-# warning, active connected-component count / Euler characteristic must
-# never be recomputed ad hoc for panel c -- only official metrics or these
-# verified table values are used. Euler characteristic is intentionally not
-# plotted (kept in the written table only).
+# warning, active connected-component count / chord length must never be
+# recomputed ad hoc for panel c -- only the official summary tables or
+# these verified values are used. Active Euler characteristic is
+# intentionally never plotted.
 TABLE46_CONTINUITY = {
     "real":     {"components": 5.66,  "chord": 14.55},
     "microlad": {"components": 56.62, "chord": 7.91},
@@ -126,6 +134,7 @@ TABLE46_CONTINUITY = {
 
 INTERFACE_METRIC_ORDER = ["pore_active", "pore_cbd", "active_cbd", "tpc_proxy"]
 INTERFACE_TICK_LABELS = ["Pore-active", "Pore-CBD", "Active-CBD", "TPC proxy"]
+INTERFACE_PAIR_TO_NAME = {(0, 1): "pore_active", (0, 2): "pore_cbd", (1, 2): "active_cbd"}
 
 # ============================================================================
 # 2. STYLE -- identical contract to Figure 4.1
@@ -159,9 +168,9 @@ SUBTEXT = "#59496A"
 
 COLORS = {"real": "#8C93A1", "microlad": "#F2A93B", "slicegan": "#772A8E"}
 
-# Visible model names used everywhere in the figure (legends, titles, labels).
-# Internal keys ("real", "microlad", "slicegan") are unchanged and never
-# shown; "diffusion_samples"/"gan_samples" folder names stay in logs only.
+# Visible model names used everywhere in the figure. Internal keys ("real",
+# "microlad", "slicegan") and CSV group strings ("real", "diffusion", "gan")
+# are never shown.
 LABELS = {"real": "Reference", "microlad": "MicroLad", "slicegan": "SliceGAN"}
 
 LINESTYLES = {"real": "-", "microlad": "-", "slicegan": (0, (5.5, 2.2))}
@@ -172,7 +181,8 @@ MARKERS = {"real": "o", "microlad": "D", "slicegan": "^"}
 CARD_LW = 0.8
 CELL_LW = 1.6
 
-# Phase -> grayscale value (0=pore near-black, 1=active near-white, 2=CBD mid-gray)
+# Official phase convention -- never swapped: 0=pore, 1=active, 2=CBD.
+# Phase -> grayscale value (0=pore near-black, 1=active near-white, 2=CBD mid-gray).
 PHASE_GRAY_VALUES = np.array([0.05, 0.94, 0.55])
 PHASE_NAMES = ["Pore", "Active", "CBD"]
 
@@ -184,9 +194,6 @@ card_a = [0.045, 0.365, 0.380, 0.570]
 card_b = [0.445, 0.365, 0.510, 0.570]
 card_c = [0.045, 0.012, 0.910, 0.290]
 
-# Vertical clearance between a panel label's top-anchor and the top edge of
-# the panel it names, identical for a), b), c) -- see Figure 4.1 for the
-# reasoning (keeps each label visually attached to its own panel).
 PANEL_LABEL_OFFSET = 0.030
 
 assert abs(card_a[1] - card_b[1]) < 1e-12, "panel a/b y mismatch"
@@ -195,7 +202,7 @@ assert abs(card_c[0] - card_a[0]) < 1e-12, "panel c left edge mismatch"
 assert abs((card_c[0] + card_c[2]) - (card_b[0] + card_b[2])) < 1e-12, "panel c right edge mismatch"
 
 # ============================================================================
-# 4. GENERIC HELPERS -- reused verbatim from Figure 4.1
+# 4. GENERIC HELPERS
 # ============================================================================
 
 
@@ -207,91 +214,37 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(s).lower())
 
 
-def pick_col(df: pd.DataFrame, candidates, what: str, required: bool = True):
-    """Return the first candidate column present in df (case/format tolerant)."""
-    lut = {_norm(c): c for c in df.columns}
-    for cand in candidates:
-        key = _norm(cand)
-        if key in lut:
-            return lut[key]
-    msg = f"[cols] could not resolve '{what}' from {list(candidates)}"
-    if required:
-        log(msg)
-        log("[cols] available columns:", list(df.columns))
-        raise KeyError(msg)
-    log(msg + "  -> skipped. Available:", list(df.columns))
-    return None
-
-
-def normalize_group(value) -> str | None:
-    """Robust mapping of raw CSV/folder labels onto the internal group keys.
-
-    real / reference / ground truth  -> real
-    microlad / diffusion             -> microlad
-    slicegan / gan                   -> slicegan  (checked before microlad so
-                                         "slicegan" itself never matches "gan"
-                                         incorrectly against microlad)
-    """
-    v = _norm(value)
-    if not v:
-        return None
-    if "slicegan" in v or "gan" in v:
-        return "slicegan"
-    if "microlad" in v or "diffusion" in v or "diff" in v:
-        return "microlad"
-    if "real" in v or v.startswith("ref") or "ground" in v or v == "gt":
-        return "real"
-    return None
-
-
 def _path_is_excluded(p: Path) -> bool:
     s = _norm(str(p))
     return any(tok in s for tok in EXCLUDE_PATH_TOKENS)
 
 
+def map_csv_group(value) -> str | None:
+    """Exact mapping of the official CSV 'group' strings (real/diffusion/gan)
+    onto internal keys. No fuzzy matching -- the task specifies these exact
+    strings."""
+    if value is None:
+        return None
+    return CSV_GROUP_MAP.get(str(value).strip().lower())
+
+
 # ============================================================================
-# 5. DATA DISCOVERY + THREE-PHASE VOLUME LOADING
+# 5. VOLUME LOADING (exact official standardized-input folders only)
 # ============================================================================
 
 
-def discover_sample_dir(group: str) -> Path:
-    """Find the sample folder for a group under EVAL_DIR, never under an
-    excluded (CBD-middle) path. Prefers a shallow folder that directly
-    contains volume files matching the group's keywords."""
-    if not EVAL_DIR.exists():
+def resolve_volume_dir(group: str) -> Path:
+    d = GROUP_VOLUME_DIRS[group]
+    if not d.exists():
         raise FileNotFoundError(
-            f"Expected sample root not found: {EVAL_DIR}\n"
-            f"Checked because GROUP_DIR_KEYWORDS assumes samples live under evaluation_4_2/."
+            f"[data:{group}] expected exact official folder not found: {d}\n"
+            f"This script does not search broadly for sample folders -- only "
+            f"evaluation_4_2_all_metrics_inputs/<real|diffusion|gan> is used, per task instructions."
         )
-    keywords = GROUP_DIR_KEYWORDS[group]
-    candidates = []
-    all_dirs = [p for p in EVAL_DIR.rglob("*") if p.is_dir()]
-    for p in [EVAL_DIR] + all_dirs:
-        if _path_is_excluded(p):
-            continue
-        name = _norm(p.name)
-        if p is not EVAL_DIR and not any(k in name for k in keywords):
-            continue
-        try:
-            files = [f for f in p.iterdir() if f.is_file() and f.suffix.lower() in VOLUME_EXTS]
-        except OSError:
-            continue
-        if files:
-            candidates.append((p, len(files)))
-    if not candidates:
-        found = sorted({str(p) for p in all_dirs if not _path_is_excluded(p)})
-        raise FileNotFoundError(
-            f"[data:{group}] could not find a sample folder under {EVAL_DIR} matching "
-            f"keywords {keywords} with .npy/.tif/.tiff files inside.\n"
-            f"Folders actually found under evaluation_4_2 (excluding CBD-middle paths):\n  "
-            + "\n  ".join(found[:60])
-        )
-    # Prefer the shallowest folder with the most volume files.
-    candidates.sort(key=lambda t: (len(t[0].parts), -t[1]))
-    chosen = candidates[0][0]
-    if _path_is_excluded(chosen):
-        raise RuntimeError(f"[data:{group}] resolved folder {chosen} looks like a CBD-middle path -- aborting")
-    return chosen
+    if _path_is_excluded(d):
+        raise RuntimeError(f"[data:{group}] resolved folder {d} matches an excluded pattern "
+                            f"({EXCLUDE_PATH_TOKENS}) -- refusing to use it")
+    return d
 
 
 def load_raw_array(path: Path) -> np.ndarray:
@@ -299,17 +252,12 @@ def load_raw_array(path: Path) -> np.ndarray:
         arr = np.load(str(path))
     else:
         arr = tiff.imread(str(path))
-    arr = np.squeeze(np.asarray(arr))
-    if arr.ndim != 3:
-        raise ValueError(f"expected a 3D volume, got shape {arr.shape} in {path}")
-    return arr
+    return np.squeeze(np.asarray(arr))
 
 
 def remap_labels(arr: np.ndarray) -> np.ndarray:
-    """Map an arbitrary 3-level label encoding (0/1/2, 0/0.5/1.0, 0/127/255,
-    ...) onto 0=pore, 1=active, 2=CBD by ascending value order. Never
-    label-swaps: the lowest raw value is always pore, middle is active,
-    highest is CBD, per the task's phase convention."""
+    """Map onto 0=pore, 1=active, 2=CBD by ascending raw value -- the
+    official convention. Never label-swaps."""
     vals = np.unique(arr)
     if vals.size != 3:
         raise ValueError(
@@ -333,13 +281,10 @@ def phase_fractions(vol: np.ndarray) -> dict:
 
 
 def load_group(group: str) -> dict:
-    """Discover, load, remap, and cache every (capped) volume for a group,
-    logging exactly what the task requires: folder, count, extensions,
-    unique labels before/after conversion, and mean phase fractions."""
-    d = discover_sample_dir(group)
+    d = resolve_volume_dir(group)
     files = sorted(f for f in d.iterdir() if f.is_file() and f.suffix.lower() in VOLUME_EXTS)
     if not files:
-        raise FileNotFoundError(f"[data:{group}] no volume files in {d}")
+        raise FileNotFoundError(f"[data:{group}] no volume files (.npy/.tif/.tiff) in {d}")
 
     ext_counts: dict = {}
     for f in files:
@@ -350,13 +295,20 @@ def load_group(group: str) -> dict:
 
     use_files = files[:MAX_VOLUMES_PER_GROUP]
     if len(use_files) < len(files):
-        log(f"[data:{group}] capping at {MAX_VOLUMES_PER_GROUP} of {len(files)} volumes "
-            f"for aggregate stats / curves")
+        log(f"[data:{group}] capping at {MAX_VOLUMES_PER_GROUP} of {len(files)} volumes")
 
     volumes: dict = {}
     fracs = []
+    shape_counter: Counter = Counter()
     for i, f in enumerate(use_files):
         raw = load_raw_array(f)
+        shape_counter[tuple(raw.shape)] += 1
+        if raw.shape != EXPECTED_SHAPE:
+            raise RuntimeError(
+                f"[data:{group}] volume {f} has shape {raw.shape}, expected exactly {EXPECTED_SHAPE}. "
+                f"Stopping WITHOUT saving the figure -- {d} should contain only standardized "
+                f"64^3 metric-input volumes."
+            )
         if i < 2:
             log(f"[data:{group}] {f.name}: unique raw labels = {np.unique(raw)}")
         rem = remap_labels(raw)
@@ -365,13 +317,11 @@ def load_group(group: str) -> dict:
         volumes[f] = rem
         fracs.append(phase_fractions(rem))
 
-    mean_fracs = {
-        k: float(np.mean([fr[k] for fr in fracs])) for k in ("pore", "active", "cbd")
-    }
+    mean_fracs = {k: float(np.mean([fr[k] for fr in fracs])) for k in ("pore", "active", "cbd")}
     log(f"[data:{group}] mean phase fractions: "
-        f"pore={mean_fracs['pore']:.4f} active={mean_fracs['active']:.4f} cbd={mean_fracs['cbd']:.4f}")
+        f"pore={mean_fracs['pore']:.6f} active={mean_fracs['active']:.6f} cbd={mean_fracs['cbd']:.6f}")
 
-    return {"dir": d, "files": files, "ext_counts": ext_counts,
+    return {"dir": d, "files": files, "ext_counts": ext_counts, "shape_counts": dict(shape_counter),
             "volumes": volumes, "mean_fracs": mean_fracs}
 
 
@@ -380,15 +330,14 @@ def check_phase_fractions(group: str, mean_fracs: dict) -> None:
     bad = [(k, mean_fracs[k], target[k]) for k in ("pore", "active", "cbd")
            if abs(mean_fracs[k] - target[k]) > PHASE_TOL]
     if bad:
-        detail = ", ".join(f"{k}: got {g:.4f} vs Table 4.5 {t:.4f}" for k, g, t in bad)
+        detail = ", ".join(f"{k}: got {g:.6f} vs expected {t:.6f}" for k, g, t in bad)
         raise RuntimeError(
-            f"[sanity-check] group '{group}' phase fractions deviate from Table 4.5 by more than "
-            f"{PHASE_TOL} absolute ({detail}). This usually means the wrong sample folder was "
-            f"resolved or the label mapping is off (e.g. label-swap). Stopping rather than "
-            f"building a figure from suspect data."
+            f"[sanity-check] group '{group}' phase fractions deviate from the expected "
+            f"evaluation_4_2_all_metrics_inputs means by more than {PHASE_TOL} absolute ({detail}). "
+            f"This usually means the wrong folder was used or the label mapping is off. "
+            f"Stopping rather than building a figure from suspect data."
         )
-    log(f"[sanity-check] group '{group}' OK against Table 4.5 "
-        f"(tolerance {PHASE_TOL}): {mean_fracs}")
+    log(f"[sanity-check] group '{group}' OK (tolerance {PHASE_TOL}): {mean_fracs}")
 
 
 def choose_representative(group: str, group_data: dict):
@@ -475,8 +424,6 @@ def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, p
     grid.dimensions = np.array([nx, ny, nz]) + 1
     grid.origin = (0.0, 0.0, 0.0)
     grid.spacing = (1.0, 1.0, 1.0)
-    # pyvista/VTK expects Fortran (x-fastest) cell ordering; our array is
-    # (z, y, x), so transpose to (x, y, z) before flattening.
     grid.cell_data["phase"] = np.transpose(vol, (2, 1, 0)).flatten(order="F")
 
     slices = grid.slice_orthogonal(x=mx, y=my, z=mz)
@@ -486,7 +433,7 @@ def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, p
     pl.set_background("white")
     pl.add_mesh(slices, scalars="phase", cmap=phase_cmap, clim=[0, 2], show_scalar_bar=False)
     pl.add_mesh(pv.Box(bounds=(0, nx, 0, ny, 0, nz)), style="wireframe",
-                color=COLORS[group], line_width=2.2, opacity=0.6)
+                color=COLORS[group], line_width=2.4, opacity=0.65)
 
     pl.enable_parallel_projection()
     center = np.array([nx / 2.0, ny / 2.0, nz / 2.0])
@@ -503,30 +450,27 @@ def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, p
 
 def render_orthoslice_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path):
     """Matplotlib Axes3D fallback: three orthogonal grayscale slice planes
-    inside a group-colored wireframe box. Used automatically if PyVista is
-    unavailable or its off-screen render fails."""
+    inside a group-colored wireframe box, zoomed so the cube fills most of
+    its cell (this was too small in an earlier revision)."""
     nz, ny, nx = vol.shape
     mz, my, mx = nz // 2, ny // 2, nx // 2
 
     fig = plt.figure(figsize=(CANVAS_PX / 200.0, CANVAS_PX / 200.0), dpi=200)
-    ax = fig.add_axes([0.02, 0.02, 0.96, 0.96], projection="3d")
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0], projection="3d")
     ax.set_proj_type("ortho")
 
-    # XY plane at z = mz (varies x, y)
     X, Y = np.meshgrid(np.arange(nx + 1), np.arange(ny + 1), indexing="ij")
     Z = np.full_like(X, mz, dtype=float)
     ax.plot_surface(X, Y, Z, rstride=1, cstride=1,
                      facecolors=_phase_gray_rgba(vol[mz, :, :]).transpose(1, 0, 2),
                      shade=False, linewidth=0, antialiased=False)
 
-    # XZ plane at y = my (varies x, z)
     X2, Z2 = np.meshgrid(np.arange(nx + 1), np.arange(nz + 1), indexing="ij")
     Y2 = np.full_like(X2, my, dtype=float)
     ax.plot_surface(X2, Y2, Z2, rstride=1, cstride=1,
                      facecolors=_phase_gray_rgba(vol[:, my, :]).transpose(1, 0, 2),
                      shade=False, linewidth=0, antialiased=False)
 
-    # YZ plane at x = mx (varies y, z)
     Y3, Z3 = np.meshgrid(np.arange(ny + 1), np.arange(nz + 1), indexing="ij")
     X3 = np.full_like(Y3, mx, dtype=float)
     ax.plot_surface(X3, Y3, Z3, rstride=1, cstride=1,
@@ -539,12 +483,21 @@ def render_orthoslice_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path
     for i, j in edges:
         p1, p2 = corners[i], corners[j]
         ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
-                color=COLORS[group], linewidth=1.6, alpha=0.9)
+                color=COLORS[group], linewidth=1.8, alpha=0.9)
 
     ax.set_xlim(0, nx)
     ax.set_ylim(0, ny)
     ax.set_zlim(0, nz)
-    ax.set_box_aspect((nx, ny, nz))
+    try:
+        # Matplotlib >= 3.6: zoom > 1 fills more of the axes with the cube --
+        # this is the fix for the cube rendering too small.
+        ax.set_box_aspect((nx, ny, nz), zoom=1.5)
+    except TypeError:
+        ax.set_box_aspect((nx, ny, nz))
+        try:
+            ax.dist = 7.0
+        except Exception:
+            pass
     ax.view_init(elev=22, azim=-58)
     ax.set_axis_off()
     for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
@@ -556,9 +509,6 @@ def render_orthoslice_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path
 
 
 def render_group_cube(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float) -> bool:
-    """Try the preferred PyVista orthoslice-cube render; fall back to the
-    Matplotlib Axes3D version on any failure. Returns True if PyVista path
-    succeeded."""
     try:
         render_orthoslice_cube_pyvista(vol, group, out_raw, parallel_scale)
         return True
@@ -568,9 +518,10 @@ def render_group_cube(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
         return False
 
 
-def finalize_renders(raw_paths, out_paths, pad_frac=0.06):
+def finalize_renders(raw_paths, out_paths, pad_frac=0.035):
     """Common alpha crop across all groups -> identical scale and centring.
-    Identical to Figure 4.1's version; works on any RGBA source."""
+    pad_frac tightened from Figure 4.1's 0.06 so the orthoslice cube fills
+    more of its cell."""
     ims = {g: Image.open(p).convert("RGBA") for g, p in raw_paths.items()}
     boxes = []
     for im in ims.values():
@@ -607,242 +558,160 @@ def finalize_renders(raw_paths, out_paths, pad_frac=0.06):
 
 
 # ============================================================================
-# 8. CSV DISCOVERY (official metrics / curves)
+# 8. OFFICIAL METRIC LOADING (panel b curves) -- no CSV search, no FFT
+# fallback: these files are guaranteed to exist per task instructions. If
+# one is genuinely missing, the corresponding panel shows "metric
+# unavailable" -- it is never silently replaced by a recomputation.
 # ============================================================================
 
-CSV_TOPIC_KEYWORDS = ["tpc", "two_point", "lineal", "chord", "local", "interface",
-                       "topology", "component", "distance", "diversity", "nearest",
-                       "summary", "per_sample", "group", "curve"]
+
+def _require_columns(df: pd.DataFrame, required: set, path: Path, label: str) -> bool:
+    missing = required - set(df.columns)
+    if missing:
+        log(f"[{label}] {path} missing expected columns: {sorted(missing)}; "
+            f"available columns: {list(df.columns)}")
+        return False
+    return True
 
 
-def list_metric_csvs(root: Path):
-    if not root.exists():
-        return []
-    return sorted(p for p in root.rglob("*.csv") if not _path_is_excluded(p))
-
-
-def find_csv(keywords, roots):
-    """Best-effort search for a CSV whose filename overlaps the given
-    keywords, across the given roots (in order). Never returns a file under
-    an excluded CBD-middle path."""
-    cands = []
-    for root in roots:
-        for p in list_metric_csvs(root):
-            score = sum(1 for k in keywords if k in _norm(p.stem))
-            if score > 0:
-                cands.append((score, len(str(p)), p))
-    if not cands:
+def load_tpc_curve(kind: str):
+    """kind: 'same_active' (phase_i=1,phase_j=1) or 'cross_pore_active'
+    (phase pairs 0-1 / 1-0 combined)."""
+    if not TPC_CSV.exists():
+        log(f"[curve:{kind}] MISSING official file: {TPC_CSV}")
         return None
-    cands.sort(key=lambda t: (-t[0], t[1]))
-    return cands[0][2]
+    df = pd.read_csv(TPC_CSV)
+    if not _require_columns(df, {"group", "sample_id", "descriptor", "axis",
+                                  "phase_i", "phase_j", "r", "value"}, TPC_CSV, f"curve:{kind}"):
+        return None
 
+    df["_group"] = df["group"].map(map_csv_group)
+    pi = pd.to_numeric(df["phase_i"], errors="coerce")
+    pj = pd.to_numeric(df["phase_j"], errors="coerce")
+    if kind == "same_active":
+        sub = df[(pi == 1) & (pj == 1)]
+    elif kind == "cross_pore_active":
+        sub = df[((pi == 0) & (pj == 1)) | ((pi == 1) & (pj == 0))]
+    else:
+        raise ValueError(kind)
+    sub = sub[sub["_group"].notna()]
+    if sub.empty:
+        log(f"[curve:{kind}] no rows matched the phase filter / group mapping in {TPC_CSV}")
+        return None
 
-def log_available_csvs(label, roots):
-    all_csv = []
-    for root in roots:
-        all_csv.extend(list_metric_csvs(root))
-    log(f"[csv-search:{label}] {len(all_csv)} candidate CSV(s) available "
-        f"(CBD-middle paths excluded): {[str(p) for p in all_csv][:30]}")
+    r = pd.to_numeric(sub["r"], errors="coerce")
+    val = pd.to_numeric(sub["value"], errors="coerce")
+    sub = sub.assign(_r=r, _val=val).dropna(subset=["_r", "_val"])
+    agg = sub.groupby(["_group", "_r"])["_val"].agg(["mean", "std"]).reset_index()
 
-
-# ============================================================================
-# 9. RECONSTRUCTION-SENSITIVE CURVES (panel b)
-# ============================================================================
-
-
-def _periodic_radius_grid(shape):
-    axes = [np.fft.fftfreq(n) * n for n in shape]
-    gz, gy, gx = np.meshgrid(*axes, indexing="ij")
-    return np.sqrt(gz ** 2 + gy ** 2 + gx ** 2)
-
-
-def _radial_average(field, r, max_r, nbins):
-    r_flat = r.ravel()
-    f_flat = field.ravel()
-    bins = np.linspace(0, max_r, nbins + 1)
-    idx = np.digitize(r_flat, bins) - 1
-    xs, ys = [], []
-    for b in range(nbins):
-        m = idx == b
-        if np.any(m):
-            xs.append(0.5 * (bins[b] + bins[b + 1]))
-            ys.append(float(np.mean(f_flat[m])))
-    return np.array(xs), np.array(ys)
-
-
-def compute_tpc(mask_a: np.ndarray, mask_b: np.ndarray, max_r: int = MAX_R_VOX, nbins: int = 26):
-    """Periodic-boundary two-point correlation S_AB(r) via FFT, radially
-    binned. mask_a is mask_b for the same-phase case."""
-    fa = np.fft.fftn(mask_a.astype(np.float64))
-    fb = fa if mask_b is mask_a else np.fft.fftn(mask_b.astype(np.float64))
-    corr = np.fft.ifftn(fa * np.conj(fb)).real / mask_a.size
-    r = _periodic_radius_grid(mask_a.shape)
-    return _radial_average(corr, r, max_r, nbins)
-
-
-def _run_lengths_batch(bool2d: np.ndarray) -> np.ndarray:
-    L, N = bool2d.shape
-    padded = np.zeros((L, N + 2), dtype=np.int8)
-    padded[:, 1:-1] = bool2d.astype(np.int8)
-    d = np.diff(padded, axis=1)
-    starts = np.argwhere(d == 1)
-    ends = np.argwhere(d == -1)
-    return (ends[:, 1] - starts[:, 1]).astype(np.int64)
-
-
-def lineal_path(mask: np.ndarray, max_r: int = MAX_R_VOX):
-    """Lineal-path function L(r), averaged over the 3 principal axes, via
-    vectorized run-length encoding (probability a length-r segment lies
-    entirely within the phase)."""
-    r_vals = np.arange(1, max_r + 1, dtype=np.float64)
-    hits = np.zeros(max_r, dtype=np.float64)
-    possible = np.zeros(max_r, dtype=np.float64)
-    for axis in range(3):
-        m = np.moveaxis(mask, axis, -1)
-        N = m.shape[-1]
-        lines = m.reshape(-1, N).astype(bool)
-        lengths = _run_lengths_batch(lines)
-        if lengths.size:
-            contrib = np.clip(lengths[:, None] - r_vals[None, :] + 1, 0, None)
-            hits += contrib.sum(axis=0)
-        possible += lines.shape[0] * np.clip(N - r_vals + 1, 0, None)
-    L = np.divide(hits, possible, out=np.zeros_like(hits), where=possible > 0)
-    return r_vals, L
-
-
-def local_active_fraction(mask_active: np.ndarray, block: int = LOCAL_BLOCK):
-    shape = mask_active.shape
-    trimmed = tuple((s // block) * block for s in shape)
-    v = mask_active[:trimmed[0], :trimmed[1], :trimmed[2]]
-    nz, ny, nx = (trimmed[0] // block, trimmed[1] // block, trimmed[2] // block)
-    v = v.reshape(nz, block, ny, block, nx, block)
-    return v.mean(axis=(1, 3, 5)).ravel()
-
-
-def compute_curve_from_volumes(groups_data, func):
-    """func(vol) -> (x, y); averaged per group, std kept for 'real' only."""
     out = {}
     for g in GROUPS:
-        vols = list(groups_data[g]["volumes"].values())
-        x_ref, ys = None, []
-        for v in vols:
-            x, y = func(v)
-            if x_ref is None:
-                x_ref = x
-            ys.append(y)
-        ys = np.asarray(ys)
-        out[g] = {
-            "x": x_ref,
-            "y": ys.mean(axis=0),
-            "std": ys.std(axis=0) if g == "real" else None,
-        }
+        s = agg[agg["_group"] == g].sort_values("_r")
+        if s.empty:
+            log(f"[curve:{kind}] group '{g}' has no rows in {TPC_CSV}")
+            continue
+        out[g] = {"x": s["_r"].to_numpy(float), "y": s["mean"].to_numpy(float),
+                   "std": np.nan_to_num(s["std"].to_numpy(float)) if g == "real" else None}
+    if len(out) < 2:
+        return None
+    log(f"[curve:{kind}] loaded from official CSV: {TPC_CSV} ({len(sub)} rows, "
+        f"group-mean vs r, not raw per-sample rows)")
     return out
 
 
-def local_heterogeneity_curves(groups_data):
+def load_lineal_curve():
+    if not LINEAL_CSV.exists():
+        log(f"[curve:lineal] MISSING official file: {LINEAL_CSV}")
+        return None
+    df = pd.read_csv(LINEAL_CSV)
+    if not _require_columns(df, {"group", "sample_id", "descriptor", "axis",
+                                  "phase", "r", "value"}, LINEAL_CSV, "curve:lineal"):
+        return None
+
+    df["_group"] = df["group"].map(map_csv_group)
+    phase = pd.to_numeric(df["phase"], errors="coerce")
+    sub = df[(phase == 1) & df["_group"].notna()]
+    if sub.empty:
+        log(f"[curve:lineal] no rows matched phase==1 / group mapping in {LINEAL_CSV}")
+        return None
+
+    r = pd.to_numeric(sub["r"], errors="coerce")
+    val = pd.to_numeric(sub["value"], errors="coerce")
+    sub = sub.assign(_r=r, _val=val).dropna(subset=["_r", "_val"])
+    agg = sub.groupby(["_group", "_r"])["_val"].agg(["mean", "std"]).reset_index()
+
+    out = {}
+    for g in GROUPS:
+        s = agg[agg["_group"] == g].sort_values("_r")
+        if s.empty:
+            log(f"[curve:lineal] group '{g}' has no rows in {LINEAL_CSV}")
+            continue
+        out[g] = {"x": s["_r"].to_numpy(float), "y": s["mean"].to_numpy(float),
+                   "std": np.nan_to_num(s["std"].to_numpy(float)) if g == "real" else None}
+    if len(out) < 2:
+        return None
+    log(f"[curve:lineal] loaded from official CSV: {LINEAL_CSV} ({len(sub)} rows, "
+        f"group-mean vs r, not raw per-sample rows)")
+    return out
+
+
+def _active_phase_mask(df: pd.DataFrame) -> pd.Series:
+    """True where a row is the active phase, accepting either an integer
+    'phase' column (==1) or a 'phase_name' column (=='active')."""
+    mask = pd.Series(False, index=df.index)
+    if "phase" in df.columns:
+        mask = mask | (pd.to_numeric(df["phase"], errors="coerce") == 1)
+    if "phase_name" in df.columns:
+        mask = mask | (df["phase_name"].astype(str).str.lower() == "active")
+    return mask
+
+
+def load_local_heterogeneity_hist():
+    if not LOCAL_FRAC_CSV.exists():
+        log(f"[curve:local_heterogeneity] MISSING official file: {LOCAL_FRAC_CSV}")
+        return None
+    df = pd.read_csv(LOCAL_FRAC_CSV)
+    if not _require_columns(df, {"group", "sample_id", "block_size", "block_id", "z", "y", "x",
+                                  "phase", "phase_name", "local_fraction"},
+                             LOCAL_FRAC_CSV, "curve:local_heterogeneity"):
+        return None
+
+    df["_group"] = df["group"].map(map_csv_group)
+    sub = df[_active_phase_mask(df) & df["_group"].notna()]
+    if sub.empty:
+        log(f"[curve:local_heterogeneity] no rows matched phase==1/'active' / group mapping "
+            f"in {LOCAL_FRAC_CSV}")
+        return None
+
     edges = np.linspace(0, 1, LOCAL_HIST_BINS + 1)
     centers = 0.5 * (edges[:-1] + edges[1:])
     out = {}
     for g in GROUPS:
-        vols = list(groups_data[g]["volumes"].values())
-        frac = np.concatenate([local_active_fraction(v == 1) for v in vols]) if vols else np.array([])
-        if frac.size:
-            hist, _ = np.histogram(frac, bins=edges, density=True)
-        else:
-            hist = np.zeros(LOCAL_HIST_BINS)
-        out[g] = {"x": centers, "y": hist, "std": None}
-    return out
-
-
-def try_load_official_curve(keywords, name_hints, roots):
-    """Best-effort search for an official group-mean curve CSV with a
-    Figure-4.1-style schema (curve/group/x/mean[/std]). Returns
-    {group: {"x","y","std"}} or None if nothing safely resolves."""
-    csv = find_csv(keywords, roots)
-    if csv is None:
-        return None
-    try:
-        df = pd.read_csv(csv)
-    except Exception as exc:
-        log(f"[curve] failed to read candidate CSV {csv}: {exc}")
-        return None
-
-    curve_col = pick_col(df, ["curve", "curve_name", "metric", "name", "descriptor"], "curve", required=False)
-    group_col = pick_col(df, ["group", "set", "model", "category", "class"], "group", required=False)
-    x_col = pick_col(df, ["x", "r", "radius_vox", "radius", "lag", "bin", "bin_center",
-                           "length", "segment_length"], "x", required=False)
-    y_col = pick_col(df, ["mean", "y_mean", "value_mean", "y", "value", "mean_value"], "y", required=False)
-    std_col = pick_col(df, ["std", "y_std", "value_std", "sd", "stdev", "std_value"], "std", required=False)
-    if group_col is None or x_col is None or y_col is None:
-        log(f"[curve] candidate CSV {csv} missing required columns -> skip")
-        return None
-
-    sub = df
-    if curve_col is not None and name_hints:
-        mask = df[curve_col].astype(str).str.lower().apply(lambda s: any(h in s for h in name_hints))
-        if not mask.any():
-            log(f"[curve] no rows in {csv} match hints {name_hints} -> skip")
-            return None
-        sub = df[mask]
-
-    sub = sub.copy()
-    sub["_group"] = sub[group_col].map(normalize_group)
-    out = {}
-    for g in GROUPS:
-        s = sub[sub["_group"] == g].sort_values(x_col)
-        if s.empty:
+        vals = pd.to_numeric(sub.loc[sub["_group"] == g, "local_fraction"],
+                              errors="coerce").dropna().to_numpy(float)
+        if vals.size == 0:
+            log(f"[curve:local_heterogeneity] group '{g}' has no rows in {LOCAL_FRAC_CSV}")
             continue
-        x = pd.to_numeric(s[x_col], errors="coerce").to_numpy(float)
-        y = pd.to_numeric(s[y_col], errors="coerce").to_numpy(float)
-        ok = np.isfinite(x) & np.isfinite(y)
-        x, y = x[ok], y[ok]
-        std = None
-        if std_col is not None:
-            sd = np.nan_to_num(pd.to_numeric(s[std_col], errors="coerce").to_numpy(float)[ok])
-            if np.any(sd > 0):
-                std = sd
-        out[g] = {"x": x, "y": y, "std": std}
+        hist, _ = np.histogram(vals, bins=edges, density=True)
+        out[g] = {"x": centers, "y": hist, "std": None}
     if len(out) < 2:
         return None
-    log(f"[curve] using official CSV: {csv}")
+    log(f"[curve:local_heterogeneity] loaded from official CSV: {LOCAL_FRAC_CSV} "
+        f"({len(sub)} block rows pooled per group, {LOCAL_HIST_BINS}-bin density histogram)")
     return out
 
 
-def resolve_curve(kind, groups_data):
-    """Try official CSV first; fall back to computing from volumes, always
-    logging which path was used. Returns (curves, is_fallback)."""
-    roots = [METRICS_DIR, CLEAN_PACKAGE_DIR]
+def resolve_curve(kind):
+    """No computed fallback for panel-b curves: if the official CSV is
+    missing/unparseable, the panel shows 'metric unavailable'."""
     if kind == "active_tpc":
-        off = try_load_official_curve(["tpc", "two_point", "twopoint"],
-                                       ["11", "activeactive", "phase1phase1", "s11"], roots)
-        if off:
-            return off, False
-        log("[curve:active_tpc] no official CSV resolved -> computing S_11(r) from volumes (FFT, periodic)")
-        return compute_curve_from_volumes(groups_data, lambda v: compute_tpc(v == 1, v == 1)), True
-
+        return load_tpc_curve("same_active"), f"official {TPC_CSV.name}, phase_i=1 & phase_j=1"
     if kind == "cross_tpc":
-        off = try_load_official_curve(["tpc", "two_point", "twopoint"],
-                                       ["01", "10", "poreactive", "activepore", "cross", "s01"], roots)
-        if off:
-            return off, False
-        log("[curve:cross_tpc] no official CSV resolved -> computing S_01(r) from volumes (FFT, periodic)")
-        return compute_curve_from_volumes(groups_data, lambda v: compute_tpc(v == 0, v == 1)), True
-
+        return load_tpc_curve("cross_pore_active"), f"official {TPC_CSV.name}, phase pairs 0-1/1-0 combined"
     if kind == "lineal":
-        off = try_load_official_curve(["lineal"], ["lineal"], roots)
-        if off:
-            return off, False
-        log("[curve:lineal] no official CSV resolved -> computing active lineal-path from volumes (run-length)")
-        return compute_curve_from_volumes(groups_data, lambda v: lineal_path(v == 1)), True
-
+        return load_lineal_curve(), f"official {LINEAL_CSV.name}, phase=1"
     if kind == "local_heterogeneity":
-        off = try_load_official_curve(["local"], ["active", "heterogen"], roots)
-        if off:
-            return off, False
-        log("[curve:local_heterogeneity] no official CSV resolved -> computing "
-            f"{LOCAL_BLOCK}^3 local active-fraction histogram from volumes")
-        return local_heterogeneity_curves(groups_data), True
-
+        return load_local_heterogeneity_hist(), f"official {LOCAL_FRAC_CSV.name} histogram, phase=1"
     raise ValueError(kind)
 
 
@@ -879,83 +748,125 @@ def plot_group_curves(ax, curves, title, xlabel, ylabel, show_legend=False):
 
 
 # ============================================================================
-# 10. PANEL C -- interface hierarchy fingerprint + active-domain continuity
+# 9. PANEL C -- interface hierarchy fingerprint + active-domain continuity
+# (official summary tables only; Table 4.5/4.6 fallback if genuinely missing)
 # ============================================================================
 
 
+def load_interface_hierarchy():
+    if not INTERFACE_CSV.exists() or not TPC_PROXY_CSV.exists():
+        for p in (INTERFACE_CSV, TPC_PROXY_CSV):
+            if not p.exists():
+                log(f"[panel-c-left] MISSING official file: {p}")
+        return None
+
+    idf = pd.read_csv(INTERFACE_CSV)
+    tdf = pd.read_csv(TPC_PROXY_CSV)
+    if not _require_columns(idf, {"group", "axis", "phase_i", "phase_j", "interface_density_mean",
+                                   "interface_density_std", "interface_density_median"},
+                             INTERFACE_CSV, "panel-c-left"):
+        return None
+    if not _require_columns(tdf, {"group", "n_samples", "triple_phase_contact_count_mean",
+                                   "triple_phase_contact_count_std", "triple_phase_contact_count_median",
+                                   "triple_phase_contact_density_mean", "triple_phase_contact_density_std",
+                                   "triple_phase_contact_density_median"}, TPC_PROXY_CSV, "panel-c-left"):
+        return None
+
+    idf = idf[idf["axis"].astype(str).str.lower() == "mean3d"].copy()
+    if idf.empty:
+        log(f"[panel-c-left] no axis=='mean3d' rows in {INTERFACE_CSV}")
+        return None
+    idf["_group"] = idf["group"].map(map_csv_group)
+    idf["_pair"] = [tuple(sorted((int(a), int(b))))
+                    for a, b in zip(pd.to_numeric(idf["phase_i"], errors="coerce"),
+                                     pd.to_numeric(idf["phase_j"], errors="coerce"))]
+    tdf = tdf.copy()
+    tdf["_group"] = tdf["group"].map(map_csv_group)
+
+    out = {}
+    for g in GROUPS:
+        row_g = idf[idf["_group"] == g]
+        rec = {}
+        for pair, key in INTERFACE_PAIR_TO_NAME.items():
+            r = row_g[row_g["_pair"] == pair]
+            if r.empty:
+                log(f"[panel-c-left] missing interface pair {pair} for group '{g}' in {INTERFACE_CSV}")
+                return None
+            rec[key] = float(pd.to_numeric(r.iloc[0]["interface_density_mean"], errors="coerce"))
+        tr = tdf[tdf["_group"] == g]
+        if tr.empty:
+            log(f"[panel-c-left] missing group '{g}' in {TPC_PROXY_CSV}")
+            return None
+        rec["tpc_proxy"] = float(pd.to_numeric(tr.iloc[0]["triple_phase_contact_density_mean"], errors="coerce"))
+        out[g] = rec
+
+    log(f"[panel-c-left] loaded from official CSVs: {INTERFACE_CSV.name} (axis=mean3d) + {TPC_PROXY_CSV.name}")
+    return out
+
+
+def load_active_continuity():
+    """CRITICAL: never recomputes connected components / chord length from
+    volumes -- only these official summary tables or the Table 4.6
+    fallback."""
+    if not CONNECTIVITY_CSV.exists() or not CHORD_CSV.exists():
+        for p in (CONNECTIVITY_CSV, CHORD_CSV):
+            if not p.exists():
+                log(f"[panel-c-right] MISSING official file: {p}")
+        return None
+
+    cdf = pd.read_csv(CONNECTIVITY_CSV)
+    ldf = pd.read_csv(CHORD_CSV)
+    if "group" not in cdf.columns or "component_count_mean" not in cdf.columns:
+        log(f"[panel-c-right] {CONNECTIVITY_CSV} missing required columns; available: {list(cdf.columns)}")
+        return None
+    if "group" not in ldf.columns or "chord_mean_mean" not in ldf.columns:
+        log(f"[panel-c-right] {CHORD_CSV} missing required columns; available: {list(ldf.columns)}")
+        return None
+
+    cdf = cdf[_active_phase_mask(cdf)].copy()
+    cdf["_group"] = cdf["group"].map(map_csv_group)
+    ldf = ldf[_active_phase_mask(ldf)].copy()
+    ldf["_group"] = ldf["group"].map(map_csv_group)
+
+    out = {}
+    for g in GROUPS:
+        cr = cdf[cdf["_group"] == g]
+        if cr.empty:
+            log(f"[panel-c-right] missing group '{g}' (phase=active) in {CONNECTIVITY_CSV}")
+            return None
+        comp = float(pd.to_numeric(cr.iloc[0]["component_count_mean"], errors="coerce"))
+
+        lr = ldf[ldf["_group"] == g]
+        if lr.empty:
+            log(f"[panel-c-right] missing group '{g}' (phase=active) in {CHORD_CSV}")
+            return None
+        # CHORD_CSV has per-axis (x/y/z) rows, not mean3d -> average across axes.
+        chord = float(pd.to_numeric(lr["chord_mean_mean"], errors="coerce").mean())
+
+        out[g] = {"components": comp, "chord": chord}
+
+    log(f"[panel-c-right] loaded from official CSVs: {CONNECTIVITY_CSV.name} (phase=active) + "
+        f"{CHORD_CSV.name} (phase=active, averaged across axis rows)")
+    return out
+
+
 def resolve_interface_hierarchy():
-    roots = [METRICS_DIR, CLEAN_PACKAGE_DIR]
-    csv = find_csv(["interface", "density"], roots)
-    if csv is not None:
-        try:
-            df = pd.read_csv(csv)
-            gcol = pick_col(df, ["group", "set", "model"], "group", required=False)
-            if gcol is not None:
-                df = df.copy()
-                df["_group"] = df[gcol].map(normalize_group)
-                col_candidates = {
-                    "pore_active": ["pore_active_interface_density", "pore_active_density", "poreactive"],
-                    "pore_cbd": ["pore_cbd_interface_density", "pore_cbd_density", "porecbd"],
-                    "active_cbd": ["active_cbd_interface_density", "active_cbd_density", "activecbd"],
-                    "tpc_proxy": ["tpc_proxy_density", "triple_phase_contact_density", "tpcproxy"],
-                }
-                resolved = {k: pick_col(df, v, k, required=False) for k, v in col_candidates.items()}
-                if all(v is not None for v in resolved.values()):
-                    out, ok = {}, True
-                    for g in GROUPS:
-                        row = df[df["_group"] == g]
-                        if row.empty:
-                            ok = False
-                            break
-                        out[g] = {k: float(pd.to_numeric(row.iloc[0][c], errors="coerce"))
-                                  for k, c in resolved.items()}
-                    if ok:
-                        log(f"[panel-c-left] using official interface-hierarchy CSV: {csv}")
-                        return out, False
-        except Exception as exc:
-            log(f"[panel-c-left] failed to parse candidate CSV {csv}: {exc}")
-    log("[panel-c-left] official interface-hierarchy metrics not resolved "
-        "-> using verified Table 4.5/4.6 fallback values")
-    return TABLE46_INTERFACE, True
+    data = load_interface_hierarchy()
+    if data is not None:
+        return data, False, f"official {INTERFACE_CSV.name} (axis=mean3d) + {TPC_PROXY_CSV.name}"
+    log("[panel-c-left] FALLBACK: using verified Table 4.5/4.6 values because the official "
+        f"summary table(s) could not be loaded/parsed ({INTERFACE_CSV.name}, {TPC_PROXY_CSV.name})")
+    return TABLE46_INTERFACE, True, "Table 4.5/4.6 fallback"
 
 
 def resolve_active_continuity():
-    """CRITICAL: never recomputes connected components / Euler / chord from
-    volumes directly, per the task's explicit warning about mismatched
-    conventions -- only an official CSV or the verified Table 4.6 fallback."""
-    roots = [METRICS_DIR, CLEAN_PACKAGE_DIR]
-    csv = find_csv(["component", "chord", "topology"], roots)
-    if csv is not None:
-        try:
-            df = pd.read_csv(csv)
-            gcol = pick_col(df, ["group", "set", "model"], "group", required=False)
-            if gcol is not None:
-                df = df.copy()
-                df["_group"] = df[gcol].map(normalize_group)
-                comp_col = pick_col(df, ["n_components_active", "active_connected_components",
-                                          "components_active"], "components", required=False)
-                chord_col = pick_col(df, ["chord_active_mean", "mean_active_chord_length",
-                                           "active_chord_mean"], "chord", required=False)
-                if comp_col is not None and chord_col is not None:
-                    out, ok = {}, True
-                    for g in GROUPS:
-                        row = df[df["_group"] == g]
-                        if row.empty:
-                            ok = False
-                            break
-                        out[g] = {
-                            "components": float(pd.to_numeric(row.iloc[0][comp_col], errors="coerce")),
-                            "chord": float(pd.to_numeric(row.iloc[0][chord_col], errors="coerce")),
-                        }
-                    if ok:
-                        log(f"[panel-c-right] using official active-domain continuity CSV: {csv}")
-                        return out, False
-        except Exception as exc:
-            log(f"[panel-c-right] failed to parse candidate CSV {csv}: {exc}")
-    log("[panel-c-right] official active-domain continuity metrics not resolved "
-        "-> using verified Table 4.6 fallback group means "
-        "(never recomputed ad hoc, per task instructions)")
-    return TABLE46_CONTINUITY, True
+    data = load_active_continuity()
+    if data is not None:
+        return data, False, f"official {CONNECTIVITY_CSV.name} + {CHORD_CSV.name} (phase=active)"
+    log("[panel-c-right] FALLBACK: using verified Table 4.6 group means because the official "
+        f"summary table(s) could not be loaded/parsed ({CONNECTIVITY_CSV.name}, {CHORD_CSV.name}); "
+        "never recomputed ad hoc from volumes, per task instructions")
+    return TABLE46_CONTINUITY, True, "Table 4.6 fallback"
 
 
 def plot_interface_fingerprint(ax, data):
@@ -993,14 +904,13 @@ def plot_active_continuity(ax, data):
     ax.set_xscale("log")
 
     pts = {g: (data[g]["components"], data[g]["chord"]) for g in GROUPS if g in data}
-    missing = [g for g in GROUPS if g not in data]
-    for g in missing:
-        log(f"[panel-c-right] group '{g}' missing from active-continuity data")
+    for g in GROUPS:
+        if g not in data:
+            log(f"[panel-c-right] group '{g}' missing from active-continuity data")
 
-    # Default label offset is up-right; any pair of points that would sit
-    # nearly on top of each other (as Reference/SliceGAN typically do here)
-    # gets pushed apart in opposite diagonal directions instead, so the two
-    # labels never collide regardless of which data source populated `data`.
+    # Default label offset is up-right; a pair of near-coincident points
+    # (Reference/SliceGAN are typically very close here) gets pushed apart
+    # in opposite diagonal directions so the labels never overlap.
     offsets = {g: (9, 8) for g in pts}
     keys = list(pts.keys())
     for i in range(len(keys)):
@@ -1024,7 +934,7 @@ def plot_active_continuity(ax, data):
 
 
 # ============================================================================
-# 11. BUILD
+# 10. BUILD
 # ============================================================================
 
 def main():
@@ -1033,13 +943,12 @@ def main():
     LOGS.mkdir(parents=True, exist_ok=True)
 
     log(f"[paths] PROJECT      = {PROJECT}")
-    log(f"[paths] EVAL_DIR     = {EVAL_DIR}")
     log(f"[paths] METRICS_DIR  = {METRICS_DIR}")
-    log(f"[paths] CLEAN_PKG    = {CLEAN_PACKAGE_DIR}")
     log(f"[paths] OUT          = {OUT}")
-    log_available_csvs("metrics", [METRICS_DIR, CLEAN_PACKAGE_DIR])
+    for g in GROUPS:
+        log(f"[paths] volume dir[{g}] = {GROUP_VOLUME_DIRS[g]}")
 
-    # ---- data: discover, load, sanity-check ----------------------------
+    # ---- data: load exact official volumes, assert shape, sanity-check ----
     groups_data = {}
     for g in GROUPS:
         gd = load_group(g)
@@ -1052,22 +961,22 @@ def main():
         rep[g] = {"file": f, "vol": vol, "fracs": phase_fractions(vol)}
 
     # ---- panel a: 3D orthoslice cubes -----------------------------------
-    parallel_scale = 0.72 * max(max(rep[g]["vol"].shape) for g in GROUPS)
+    parallel_scale = 0.60 * max(max(rep[g]["vol"].shape) for g in GROUPS)
     raw_paths = {g: TMP / f"raw_{g}.png" for g in GROUPS}
     png_paths = {g: TMP / f"render_{g}.png" for g in GROUPS}
     for g in GROUPS:
         render_group_cube(rep[g]["vol"], g, raw_paths[g], parallel_scale)
     finalize_renders(raw_paths, png_paths)
 
-    # ---- panel b: curves --------------------------------------------------
-    curves_active_tpc, fb1 = resolve_curve("active_tpc", groups_data)
-    curves_cross_tpc, fb2 = resolve_curve("cross_tpc", groups_data)
-    curves_lineal, fb3 = resolve_curve("lineal", groups_data)
-    curves_local_het, fb4 = resolve_curve("local_heterogeneity", groups_data)
+    # ---- panel b: curves (official CSVs only, no computed fallback) -------
+    curves_active_tpc, src_active_tpc = resolve_curve("active_tpc")
+    curves_cross_tpc, src_cross_tpc = resolve_curve("cross_tpc")
+    curves_lineal, src_lineal = resolve_curve("lineal")
+    curves_local_het, src_local_het = resolve_curve("local_heterogeneity")
 
     # ---- panel c: interface hierarchy + active-domain continuity ---------
-    interface_data, interface_is_fallback = resolve_interface_hierarchy()
-    continuity_data, continuity_is_fallback = resolve_active_continuity()
+    interface_data, interface_is_fallback, src_interface = resolve_interface_hierarchy()
+    continuity_data, continuity_is_fallback, src_continuity = resolve_active_continuity()
 
     # ---- canvas -------------------------------------------------------------
     fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=BG)
@@ -1131,7 +1040,7 @@ def main():
     # small phase legend (Pore | Active | CBD), centered under the grid
     legend_y = ay_ + 0.015
     phase_hex = [to_hex((v, v, v)) for v in PHASE_GRAY_VALUES]
-    item_widths = [0.070, 0.082, 0.062]  # tuned to each label's rendered width
+    item_widths = [0.070, 0.082, 0.062]
     total_w = sum(item_widths)
     lx = gx0 + label_w + gap_x + (grid_w - label_w - gap_x - total_w) / 2.0
     for name, color, w in zip(PHASE_NAMES, phase_hex, item_widths):
@@ -1166,9 +1075,6 @@ def main():
         plot_group_curves(ax, curves, title, xlab, ylab, show_legend=(i == 1))
 
     # =========================== PANEL C ====================================
-    # Left/right mechanism split (not the stacked-distribution layout used in
-    # Figure 4.1's final panel c) -- per this figure's own spec. Card
-    # geometry and header style are otherwise identical to Figure 4.1.
     cx_, cy_, cw_, ch_ = card_c
 
     header_title_y = cy_ + ch_ - 0.020
@@ -1206,13 +1112,54 @@ def main():
     Image.open(png).convert("RGB").save(tif_out, compression="tiff_lzw", dpi=(450, 450))
     plt.close(fig)
 
-    log("\n[summary] fallbacks used:")
-    log(f"  active_tpc curve         : {'Table/computed fallback' if fb1 else 'official CSV'}")
-    log(f"  cross_tpc curve          : {'Table/computed fallback' if fb2 else 'official CSV'}")
-    log(f"  lineal-path curve        : {'Table/computed fallback' if fb3 else 'official CSV'}")
-    log(f"  local-heterogeneity curve: {'Table/computed fallback' if fb4 else 'official CSV'}")
-    log(f"  panel-c interface data   : {'Table 4.5/4.6 fallback' if interface_is_fallback else 'official CSV'}")
-    log(f"  panel-c continuity data  : {'Table 4.6 fallback' if continuity_is_fallback else 'official CSV'}")
+    # =========================== SUMMARY ========================================
+    log("\nVolume folders:")
+    for g in GROUPS:
+        log(f"  {g}: {GROUP_VOLUME_DIRS[g]}")
+
+    log("\nShapes:")
+    for g in GROUPS:
+        log(f"  {g}: {groups_data[g]['shape_counts']}")
+
+    log("\nPhase means:")
+    for g in GROUPS:
+        fr = groups_data[g]["mean_fracs"]
+        log(f"  {g}: pore={fr['pore']:.6f} active={fr['active']:.6f} cbd={fr['cbd']:.6f}")
+
+    log("\nMetric sources:")
+    log(f"  active TPC              : {src_active_tpc if curves_active_tpc else 'MISSING -> metric unavailable'}")
+    log(f"  pore-active cross TPC    : {src_cross_tpc if curves_cross_tpc else 'MISSING -> metric unavailable'}")
+    log(f"  active lineal            : {src_lineal if curves_lineal else 'MISSING -> metric unavailable'}")
+    log(f"  local active heterogeneity: {src_local_het if curves_local_het else 'MISSING -> metric unavailable'}")
+    log(f"  interface hierarchy      : {src_interface}")
+    log(f"  active continuity        : {src_continuity}")
+
+    fallback_notes = []
+    if not curves_active_tpc:
+        fallback_notes.append(f"active TPC unavailable: {TPC_CSV} missing/unparseable -> panel shows "
+                               f"'metric unavailable' (no computed fallback used)")
+    if not curves_cross_tpc:
+        fallback_notes.append(f"cross TPC unavailable: {TPC_CSV} missing/unparseable -> panel shows "
+                               f"'metric unavailable' (no computed fallback used)")
+    if not curves_lineal:
+        fallback_notes.append(f"lineal path unavailable: {LINEAL_CSV} missing/unparseable -> panel shows "
+                               f"'metric unavailable' (no computed fallback used)")
+    if not curves_local_het:
+        fallback_notes.append(f"local heterogeneity unavailable: {LOCAL_FRAC_CSV} missing/unparseable -> "
+                               f"panel shows 'metric unavailable' (no computed fallback used)")
+    if interface_is_fallback:
+        fallback_notes.append(f"panel-c-left used Table 4.5/4.6 fallback: {INTERFACE_CSV} and/or "
+                               f"{TPC_PROXY_CSV} missing/unparseable")
+    if continuity_is_fallback:
+        fallback_notes.append(f"panel-c-right used Table 4.6 fallback: {CONNECTIVITY_CSV} and/or "
+                               f"{CHORD_CSV} missing/unparseable")
+
+    log("\nFallbacks used:")
+    if fallback_notes:
+        for note in fallback_notes:
+            log(f"  - {note}")
+    else:
+        log("  none -- all panels used the official metric files.")
 
     log("\nSaved:")
     for p in (png, pdf, svg, tif_out):
