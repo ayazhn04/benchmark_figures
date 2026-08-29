@@ -36,6 +36,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.colors import ListedColormap, to_hex
+from matplotlib.lines import Line2D
 from PIL import Image
 
 warnings.filterwarnings("ignore")
@@ -393,8 +394,17 @@ def image_cell(ax, color, lw=CELL_LW):
 
 
 # ============================================================================
-# 7. THREE-PHASE 3D ORTHOSLICE-CUBE RENDERING (panel a)
+# 7. THREE-PHASE 3D CUTAWAY-CUBE RENDERING (panel a)
+#
+# A solid-looking segmented cube with one octant (the high-x/high-y/high-z
+# corner) removed, exposing two interior cut faces plus the outer surfaces --
+# all colored by the same grayscale phase mapping as the 2D slices. Replaces
+# an earlier orthoslice-star render (three floating cut planes), which read
+# as three intersecting slices rather than a real 3D volume.
 # ============================================================================
+
+CUBE_DOWNSAMPLE = 2  # 64^3 -> 32^3 for the 3D render only; all metrics/stats
+                      # use the full-resolution volume elsewhere in the script.
 
 
 def _resample():
@@ -404,12 +414,29 @@ def _resample():
         return Image.LANCZOS
 
 
-def _phase_gray_rgba(label_slice: np.ndarray) -> np.ndarray:
-    g = PHASE_GRAY_VALUES[label_slice]
-    return np.stack([g, g, g, np.ones_like(g)], axis=-1)
+def _downsample_labels_mode(vol: np.ndarray, factor: int) -> np.ndarray:
+    """Block-mode (majority-vote) downsample that only ever emits values
+    already present in the volume -- i.e. real voxel labels, not
+    interpolated/fake ones."""
+    nz, ny, nx = vol.shape
+    nz2, ny2, nx2 = (nz // factor) * factor, (ny // factor) * factor, (nx // factor) * factor
+    v = vol[:nz2, :ny2, :nx2]
+    b = v.reshape(nz2 // factor, factor, ny2 // factor, factor, nx2 // factor, factor)
+    b = b.transpose(0, 2, 4, 1, 3, 5).reshape(nz2 // factor, ny2 // factor, nx2 // factor, -1)
+    counts = np.stack([(b == k).sum(-1) for k in (0, 1, 2)], axis=-1)
+    return np.argmax(counts, axis=-1).astype(np.uint8)
 
 
-def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float):
+def _octant_keep_mask(nx: int, ny: int, nz: int) -> np.ndarray:
+    """True everywhere except the removed corner octant (high-x, high-y,
+    high-z, in x/y/z order), which is the corner that reads most clearly as
+    'one octant cut away' at this figure's fixed camera angle."""
+    keep = np.ones((nx, ny, nz), dtype=bool)
+    keep[nx // 2:, ny // 2:, nz // 2:] = False
+    return keep
+
+
+def render_cutaway_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float):
     import pyvista as pv
 
     try:
@@ -417,21 +444,22 @@ def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, p
     except Exception:
         pass
 
-    nz, ny, nx = vol.shape
-    mx, my, mz = nx // 2, ny // 2, nz // 2
+    ds = _downsample_labels_mode(vol, CUBE_DOWNSAMPLE)
+    nz, ny, nx = ds.shape
 
     grid = pv.ImageData()
     grid.dimensions = np.array([nx, ny, nz]) + 1
     grid.origin = (0.0, 0.0, 0.0)
     grid.spacing = (1.0, 1.0, 1.0)
-    grid.cell_data["phase"] = np.transpose(vol, (2, 1, 0)).flatten(order="F")
+    grid.cell_data["phase"] = np.transpose(ds, (2, 1, 0)).flatten(order="F")
+    grid.cell_data["keep"] = _octant_keep_mask(nx, ny, nz).flatten(order="F").astype(np.uint8)
 
-    slices = grid.slice_orthogonal(x=mx, y=my, z=mz)
+    sub = grid.threshold(0.5, scalars="keep")
     phase_cmap = ListedColormap([to_hex((g, g, g)) for g in PHASE_GRAY_VALUES])
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
-    pl.add_mesh(slices, scalars="phase", cmap=phase_cmap, clim=[0, 2], show_scalar_bar=False)
+    pl.add_mesh(sub, scalars="phase", cmap=phase_cmap, clim=[0, 2], show_scalar_bar=False)
     pl.add_mesh(pv.Box(bounds=(0, nx, 0, ny, 0, nz)), style="wireframe",
                 color=COLORS[group], line_width=2.4, opacity=0.65)
 
@@ -440,7 +468,7 @@ def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, p
     direction = np.array([1.0, -1.30, 0.90])
     direction /= np.linalg.norm(direction)
     pl.camera.focal_point = tuple(center)
-    pl.camera.position = tuple(center + direction * 4.0 * max(vol.shape))
+    pl.camera.position = tuple(center + direction * 4.0 * max(ds.shape))
     pl.camera.up = (0.0, 0.0, 1.0)
     pl.camera.parallel_scale = float(parallel_scale)
 
@@ -448,34 +476,26 @@ def render_orthoslice_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, p
     pl.close()
 
 
-def render_orthoslice_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path):
-    """Matplotlib Axes3D fallback: three orthogonal grayscale slice planes
-    inside a group-colored wireframe box, zoomed so the cube fills most of
-    its cell (this was too small in an earlier revision)."""
-    nz, ny, nx = vol.shape
-    mz, my, mx = nz // 2, ny // 2, nx // 2
+def render_cutaway_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path):
+    """Matplotlib Axes3D fallback via ax.voxels: renders only the exposed
+    outer + cut-face surfaces of the octant-minus-cube solid (fully interior
+    voxels draw nothing), so this stays fast and uncluttered at 32^3."""
+    ds = _downsample_labels_mode(vol, CUBE_DOWNSAMPLE)
+    lab_xyz = np.transpose(ds, (2, 1, 0))  # (nz,ny,nx) -> (nx,ny,nz)
+    nx, ny, nz = lab_xyz.shape
+
+    filled = _octant_keep_mask(nx, ny, nz)
+    gray = PHASE_GRAY_VALUES[lab_xyz]
+    colors = np.empty(filled.shape + (4,), dtype=float)
+    colors[..., 0] = gray
+    colors[..., 1] = gray
+    colors[..., 2] = gray
+    colors[..., 3] = 1.0
 
     fig = plt.figure(figsize=(CANVAS_PX / 200.0, CANVAS_PX / 200.0), dpi=200)
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0], projection="3d")
     ax.set_proj_type("ortho")
-
-    X, Y = np.meshgrid(np.arange(nx + 1), np.arange(ny + 1), indexing="ij")
-    Z = np.full_like(X, mz, dtype=float)
-    ax.plot_surface(X, Y, Z, rstride=1, cstride=1,
-                     facecolors=_phase_gray_rgba(vol[mz, :, :]).transpose(1, 0, 2),
-                     shade=False, linewidth=0, antialiased=False)
-
-    X2, Z2 = np.meshgrid(np.arange(nx + 1), np.arange(nz + 1), indexing="ij")
-    Y2 = np.full_like(X2, my, dtype=float)
-    ax.plot_surface(X2, Y2, Z2, rstride=1, cstride=1,
-                     facecolors=_phase_gray_rgba(vol[:, my, :]).transpose(1, 0, 2),
-                     shade=False, linewidth=0, antialiased=False)
-
-    Y3, Z3 = np.meshgrid(np.arange(ny + 1), np.arange(nz + 1), indexing="ij")
-    X3 = np.full_like(Y3, mx, dtype=float)
-    ax.plot_surface(X3, Y3, Z3, rstride=1, cstride=1,
-                     facecolors=_phase_gray_rgba(vol[:, :, mx]).transpose(1, 0, 2),
-                     shade=False, linewidth=0, antialiased=False)
+    ax.voxels(filled, facecolors=colors, shade=True)
 
     corners = np.array([[x, y, z] for x in (0, nx) for y in (0, ny) for z in (0, nz)])
     edges = [(0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3),
@@ -489,15 +509,11 @@ def render_orthoslice_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path
     ax.set_ylim(0, ny)
     ax.set_zlim(0, nz)
     try:
-        # Matplotlib >= 3.6: zoom > 1 fills more of the axes with the cube --
-        # this is the fix for the cube rendering too small.
-        ax.set_box_aspect((nx, ny, nz), zoom=1.5)
+        # A full solid voxel grid needs a much smaller zoom than the old
+        # sparse orthoslice planes did, or the cube clips out of frame.
+        ax.set_box_aspect((nx, ny, nz), zoom=0.95)
     except TypeError:
         ax.set_box_aspect((nx, ny, nz))
-        try:
-            ax.dist = 7.0
-        except Exception:
-            pass
     ax.view_init(elev=22, azim=-58)
     ax.set_axis_off()
     for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
@@ -510,18 +526,16 @@ def render_orthoslice_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path
 
 def render_group_cube(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float) -> bool:
     try:
-        render_orthoslice_cube_pyvista(vol, group, out_raw, parallel_scale)
+        render_cutaway_cube_pyvista(vol, group, out_raw, parallel_scale)
         return True
     except Exception as exc:
-        log(f"[render:{group}] PyVista orthoslice-cube unavailable/failed -> Matplotlib fallback ({exc})")
-        render_orthoslice_cube_matplotlib(vol, group, out_raw)
+        log(f"[render:{group}] PyVista cutaway-cube unavailable/failed -> Matplotlib fallback ({exc})")
+        render_cutaway_cube_matplotlib(vol, group, out_raw)
         return False
 
 
-def finalize_renders(raw_paths, out_paths, pad_frac=0.035):
-    """Common alpha crop across all groups -> identical scale and centring.
-    pad_frac tightened from Figure 4.1's 0.06 so the orthoslice cube fills
-    more of its cell."""
+def finalize_renders(raw_paths, out_paths, pad_frac=0.05):
+    """Common alpha crop across all groups -> identical scale and centring."""
     ims = {g: Image.open(p).convert("RGBA") for g, p in raw_paths.items()}
     boxes = []
     for im in ims.values():
@@ -748,7 +762,7 @@ def plot_group_curves(ax, curves, title, xlabel, ylabel, show_legend=False):
 
 
 # ============================================================================
-# 9. PANEL C -- interface hierarchy fingerprint + active-domain continuity
+# 9. PANEL C -- interface hierarchy deviation + active-domain continuity
 # (official summary tables only; Table 4.5/4.6 fallback if genuinely missing)
 # ============================================================================
 
@@ -869,31 +883,53 @@ def resolve_active_continuity():
     return TABLE46_CONTINUITY, True, "Table 4.6 fallback"
 
 
-def plot_interface_fingerprint(ax, data):
-    style_axis(ax)
-    ax.set_title("Interface hierarchy fingerprint", pad=4.5, color=TEXT, fontweight="bold")
-    ax.set_ylabel("Density / proxy value", color=SUBTEXT)
+def plot_interface_deviation(ax, data):
+    """Reference-relative deviation (model - reference) per interface
+    metric, plotted as per-category stems -- not a connected line across
+    categories, since the categories are not continuous and a connected
+    line previously made MicroLad look like a mirrored/inverted curve
+    rather than four independent deviations."""
+    style_axis(ax, grid=False)
+    ax.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
+    ax.set_axisbelow(True)
+    ax.set_title("Interface hierarchy deviation", pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_ylabel("Difference from reference", color=SUBTEXT)
 
     xs = np.arange(len(INTERFACE_METRIC_ORDER))
-    for g in GROUPS:
-        if g not in data:
-            log(f"[panel-c-left] group '{g}' missing from interface-hierarchy data")
-            continue
-        vals = [data[g][m] for m in INTERFACE_METRIC_ORDER]
-        ax.plot(xs, vals, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
-                 marker="o", markersize=5.5, markerfacecolor=COLORS[g],
-                 markeredgecolor="black", markeredgewidth=0.6,
-                 label=LABELS[g], zorder=3 if g == "real" else 4)
+    ax.axhline(0.0, color=COLORS["real"], linewidth=1.4, zorder=2)
+
+    deviation_groups = ["microlad", "slicegan"]
+    x_offset = {"microlad": -0.19, "slicegan": 0.19}
+
+    if "real" not in data:
+        log("[panel-c-left] reference missing from interface-hierarchy data -- cannot compute deviations")
+    else:
+        for g in deviation_groups:
+            if g not in data:
+                log(f"[panel-c-left] group '{g}' missing from interface-hierarchy data")
+                continue
+            devs = [data[g][m] - data["real"][m] for m in INTERFACE_METRIC_ORDER]
+            x_pos = xs + x_offset[g]
+            markerline, stemlines, baseline = ax.stem(x_pos, devs, basefmt=" ")
+            plt.setp(markerline, color=COLORS[g], markersize=7, markeredgecolor="black",
+                     markeredgewidth=0.6, zorder=5)
+            plt.setp(stemlines, color=COLORS[g], linewidth=2.2, zorder=4)
 
     ax.set_xticks(xs)
     ax.set_xticklabels(INTERFACE_TICK_LABELS, fontsize=7.2)
-    ax.set_xlim(-0.4, len(INTERFACE_METRIC_ORDER) - 0.6)
-    ax.margins(y=0.16)
+    ax.set_xlim(-0.5, len(INTERFACE_METRIC_ORDER) - 0.5)
+    ax.set_ylim(-0.055, 0.055)
 
-    leg = ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
-                     framealpha=0.94, handlelength=2.0, borderpad=0.4,
+    handles = [Line2D([0], [0], marker="o", color=COLORS[g], linestyle="none", markersize=6,
+                       markeredgecolor="black", markeredgewidth=0.6, label=LABELS[g])
+               for g in deviation_groups]
+    leg = ax.legend(handles=handles, loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
+                     framealpha=0.94, handlelength=1.4, borderpad=0.4,
                      labelspacing=0.3, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
+
+    ax.text(0.985, 0.045, "Reference = 0 baseline", transform=ax.transAxes, ha="right", va="bottom",
+            fontsize=6.4, color=SUBTEXT, style="italic")
 
 
 def plot_active_continuity(ax, data):
@@ -907,6 +943,17 @@ def plot_active_continuity(ax, data):
     for g in GROUPS:
         if g not in data:
             log(f"[panel-c-right] group '{g}' missing from active-continuity data")
+
+    if "real" in pts:
+        ref_x, ref_y = pts["real"]
+        # Faint shaded "closer to reference" zone, drawn first so markers
+        # and labels always sit on top of it.
+        zone = Rectangle((ref_x / 1.8, ref_y - 1.4), ref_x * 1.8 - ref_x / 1.8, 2.8,
+                          facecolor=COLORS["real"], edgecolor="none", alpha=0.08, zorder=0)
+        ax.add_patch(zone)
+        # Faint reference crosshair.
+        ax.axvline(ref_x, color=COLORS["real"], linestyle=(0, (1, 2)), linewidth=1.0, alpha=0.6, zorder=1)
+        ax.axhline(ref_y, color=COLORS["real"], linestyle=(0, (1, 2)), linewidth=1.0, alpha=0.6, zorder=1)
 
     # Default label offset is up-right; a pair of near-coincident points
     # (Reference/SliceGAN are typically very close here) gets pushed apart
@@ -1078,8 +1125,7 @@ def main():
     cx_, cy_, cw_, ch_ = card_c
 
     header_title_y = cy_ + ch_ - 0.020
-    header_subtitle_y = header_title_y - 0.020
-    plot_top = header_subtitle_y - 0.028
+    plot_top = header_title_y - 0.030
     c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.046, 0.055
     plot_bottom = cy_ + c_pb
     plot_h_c = plot_top - plot_bottom
@@ -1089,15 +1135,11 @@ def main():
 
     fig.text(cx_ + 0.014, header_title_y, "Mechanistic descriptors",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
-    fig.text(cx_ + 0.014, header_subtitle_y,
-             "Interface hierarchy and active-domain continuity from the same official "
-             "Section 4.2 evaluation used in Tables 4.5 and 4.6.",
-             ha="left", va="top", fontsize=7.2, color=SUBTEXT, wrap=True)
 
     ax_left = fig.add_axes([left_x, plot_bottom, plot_w_c, plot_h_c])
     ax_right = fig.add_axes([right_x, plot_bottom, plot_w_c, plot_h_c])
 
-    plot_interface_fingerprint(ax_left, interface_data)
+    plot_interface_deviation(ax_left, interface_data)
     plot_active_continuity(ax_right, continuity_data)
 
     # =========================== SAVE ========================================
