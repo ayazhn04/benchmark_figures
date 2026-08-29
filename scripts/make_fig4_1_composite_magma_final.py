@@ -700,7 +700,9 @@ def main():
 
     add_panel_label(fig, card_a[0] + 0.007, 0.988, "a)")
     add_panel_label(fig, card_b[0] + 0.007, 0.988, "b)")
-    add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + 0.037, "c)")
+    # Anchored off card_a's bottom edge (not card_c's top) so the label can
+    # never drift into panel a/b regardless of how card_c's height is tuned.
+    add_panel_label(fig, card_c[0] + 0.007, card_a[1] - 0.006, "c)")
 
     # =========================== PANEL A ====================================
     ax_, ay_, aw_, ah_ = card_a
