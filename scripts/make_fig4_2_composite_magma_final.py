@@ -36,7 +36,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.colors import ListedColormap, to_hex
-from matplotlib.lines import Line2D
 from PIL import Image
 
 warnings.filterwarnings("ignore")
@@ -428,11 +427,14 @@ def _downsample_labels_mode(vol: np.ndarray, factor: int) -> np.ndarray:
 
 
 def _octant_keep_mask(nx: int, ny: int, nz: int) -> np.ndarray:
-    """True everywhere except the removed corner octant (high-x, high-y,
-    high-z, in x/y/z order), which is the corner that reads most clearly as
-    'one octant cut away' at this figure's fixed camera angle."""
+    """True everywhere except the removed corner octant. At this figure's
+    fixed camera angle (elev=22, azim=-58), the vertex nearest the viewer is
+    (high-x, low-y, high-z) -- solving cos(elev)*cos(azim), cos(elev)*
+    sin(azim), sin(elev) gives a (+,-,+) camera direction from the cube
+    center, so that is the corner removed here, putting the cutaway facing
+    the viewer rather than off to the side."""
     keep = np.ones((nx, ny, nz), dtype=bool)
-    keep[nx // 2:, ny // 2:, nz // 2:] = False
+    keep[nx // 2:, :ny // 2, nz // 2:] = False
     return keep
 
 
@@ -762,7 +764,7 @@ def plot_group_curves(ax, curves, title, xlabel, ylabel, show_legend=False):
 
 
 # ============================================================================
-# 9. PANEL C -- interface hierarchy deviation + active-domain continuity
+# 9. PANEL C -- interface hierarchy fingerprint + active-domain continuity
 # (official summary tables only; Table 4.5/4.6 fallback if genuinely missing)
 # ============================================================================
 
@@ -883,53 +885,31 @@ def resolve_active_continuity():
     return TABLE46_CONTINUITY, True, "Table 4.6 fallback"
 
 
-def plot_interface_deviation(ax, data):
-    """Reference-relative deviation (model - reference) per interface
-    metric, plotted as per-category stems -- not a connected line across
-    categories, since the categories are not continuous and a connected
-    line previously made MicroLad look like a mirrored/inverted curve
-    rather than four independent deviations."""
-    style_axis(ax, grid=False)
-    ax.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
-    ax.set_axisbelow(True)
-    ax.set_title("Interface hierarchy deviation", pad=4.5, color=TEXT, fontweight="bold")
-    ax.set_ylabel("Difference from reference", color=SUBTEXT)
+def plot_interface_fingerprint(ax, data):
+    style_axis(ax)
+    ax.set_title("Interface hierarchy fingerprint", pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_ylabel("Density / proxy value", color=SUBTEXT)
 
     xs = np.arange(len(INTERFACE_METRIC_ORDER))
-    ax.axhline(0.0, color=COLORS["real"], linewidth=1.4, zorder=2)
-
-    deviation_groups = ["microlad", "slicegan"]
-    x_offset = {"microlad": -0.19, "slicegan": 0.19}
-
-    if "real" not in data:
-        log("[panel-c-left] reference missing from interface-hierarchy data -- cannot compute deviations")
-    else:
-        for g in deviation_groups:
-            if g not in data:
-                log(f"[panel-c-left] group '{g}' missing from interface-hierarchy data")
-                continue
-            devs = [data[g][m] - data["real"][m] for m in INTERFACE_METRIC_ORDER]
-            x_pos = xs + x_offset[g]
-            markerline, stemlines, baseline = ax.stem(x_pos, devs, basefmt=" ")
-            plt.setp(markerline, color=COLORS[g], markersize=7, markeredgecolor="black",
-                     markeredgewidth=0.6, zorder=5)
-            plt.setp(stemlines, color=COLORS[g], linewidth=2.2, zorder=4)
+    for g in GROUPS:
+        if g not in data:
+            log(f"[panel-c-left] group '{g}' missing from interface-hierarchy data")
+            continue
+        vals = [data[g][m] for m in INTERFACE_METRIC_ORDER]
+        ax.plot(xs, vals, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
+                 marker="o", markersize=5.5, markerfacecolor=COLORS[g],
+                 markeredgecolor="black", markeredgewidth=0.6,
+                 label=LABELS[g], zorder=3 if g == "real" else 4)
 
     ax.set_xticks(xs)
     ax.set_xticklabels(INTERFACE_TICK_LABELS, fontsize=7.2)
-    ax.set_xlim(-0.5, len(INTERFACE_METRIC_ORDER) - 0.5)
-    ax.set_ylim(-0.055, 0.055)
+    ax.set_xlim(-0.4, len(INTERFACE_METRIC_ORDER) - 0.6)
+    ax.margins(y=0.16)
 
-    handles = [Line2D([0], [0], marker="o", color=COLORS[g], linestyle="none", markersize=6,
-                       markeredgecolor="black", markeredgewidth=0.6, label=LABELS[g])
-               for g in deviation_groups]
-    leg = ax.legend(handles=handles, loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
-                     framealpha=0.94, handlelength=1.4, borderpad=0.4,
+    leg = ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
+                     framealpha=0.94, handlelength=2.0, borderpad=0.4,
                      labelspacing=0.3, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
-
-    ax.text(0.985, 0.045, "Reference = 0 baseline", transform=ax.transAxes, ha="right", va="bottom",
-            fontsize=6.4, color=SUBTEXT, style="italic")
 
 
 def plot_active_continuity(ax, data):
@@ -1139,7 +1119,7 @@ def main():
     ax_left = fig.add_axes([left_x, plot_bottom, plot_w_c, plot_h_c])
     ax_right = fig.add_axes([right_x, plot_bottom, plot_w_c, plot_h_c])
 
-    plot_interface_deviation(ax_left, interface_data)
+    plot_interface_fingerprint(ax_left, interface_data)
     plot_active_continuity(ax_right, continuity_data)
 
     # =========================== SAVE ========================================
