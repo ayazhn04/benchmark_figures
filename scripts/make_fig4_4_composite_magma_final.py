@@ -831,6 +831,7 @@ def plot_directional_transitions(ax, scalar_df):
     bar_w = group_w / n_groups
     xs = np.arange(len(TRANSITION_AXES))
 
+    max_top = 0.0
     for gi, g in enumerate(GROUPS):
         means, stds = [], []
         for axis in TRANSITION_AXES:
@@ -844,10 +845,13 @@ def plot_directional_transitions(ax, scalar_df):
         ax.bar(xs + offset, means, yerr=stds, width=bar_w * 0.88, color=COLORS[g],
                edgecolor="black", linewidth=0.7, label=LABELS[g],
                error_kw=dict(ecolor=TEXT, elinewidth=1.0, capsize=2.2))
+        max_top = max(max_top, max(m + s for m, s in zip(means, stds)))
 
     ax.set_xticks(xs)
     ax.set_xticklabels(["X", "Y", "Z"], fontsize=7.6)
-    ax.margins(y=0.30)
+    # Transition rates are non-negative -- start the axis at a true zero
+    # baseline, with modest headroom above the tallest mean+std error bar.
+    ax.set_ylim(0.0, max_top * 1.18)
 
     # Single model legend for all of panel b -- placed here, upper-right,
     # so the 2x2 block carries exactly one legend (see plot_autocovariance).
@@ -1031,16 +1035,17 @@ def plot_transport(ax, dstar_agg):
 def build_panel_c(fig, card, perc_agg, dstar_agg):
     cx_, cy_, cw_, ch_ = card
     header_title_y = cy_ + ch_ - 0.020
-    # A noticeably larger card-heading-to-subplot-title gap than before (was
-    # 0.030) so the card heading and the subplot titles read as two clearly
-    # separate levels of hierarchy rather than a two-line title. The bottom
-    # padding is correspondingly reduced (the D*=0 note that used to live
-    # down there now sits just under the right axis instead -- see below),
-    # which both uses the previously empty lower whitespace and gives the
-    # plotting axes a bit more height.
-    plot_top = header_title_y - 0.058
+    # The card heading and the subplot titles must read as two clearly
+    # separate hierarchy levels (not a two-line title), but the previous gap
+    # (header_title_y - 0.058) left slightly too much empty space above the
+    # plots. Both axes are shifted upward by AXES_SHIFT_UP (~1.5% of the
+    # total figure height) -- the gap shrinks a bit while the plot height
+    # (plot_top - plot_bottom) is unchanged -- landing between that overly
+    # roomy version and the original cramped one (gap was 0.030 there).
+    AXES_SHIFT_UP = 0.016
+    plot_top = header_title_y - 0.058 + AXES_SHIFT_UP
     c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.044, 0.055
-    plot_bottom = cy_ + c_pb
+    plot_bottom = cy_ + c_pb + AXES_SHIFT_UP
     plot_h_c = plot_top - plot_bottom
     plot_w_c = (cw_ - c_pl - c_pr - c_gx) / 2.0
     left_x = cx_ + c_pl
@@ -1069,7 +1074,7 @@ def build_panel_c(fig, card, perc_agg, dstar_agg):
     # sitting near the card's bottom border.
     fig.text(right_x + plot_w_c / 2.0, plot_bottom - 0.018,
              "log scale; nonpercolating samples contribute D*=0 to the ensemble mean",
-             ha="center", va="top", fontsize=6.2, color=SUBTEXT)
+             ha="center", va="top", fontsize=6.5, color=SUBTEXT)
 
 
 # ============================================================================
