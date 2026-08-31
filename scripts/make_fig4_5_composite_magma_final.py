@@ -350,6 +350,26 @@ def image_cell(ax, color, lw=CELL_LW):
         sp.set_color(color)
 
 
+def _emphasize_dashed_legend_handle(leg, label: str, extra_lw: float = 1.0,
+                                     dash_pattern=(0, (7.0, 3.4))):
+    """Post-processes ONE legend entry's proxy handle -- never the actual
+    plotted artist, which is untouched -- so a dashed line (SurVol) reads
+    unmistakably even at this figure's small legend size: a bolder,
+    wider-spaced dash pattern and a slightly thicker stroke for the legend
+    swatch only."""
+    handles = getattr(leg, "legend_handles", None)
+    if handles is None:
+        handles = getattr(leg, "legendHandles", [])
+    for h, t in zip(handles, leg.get_texts()):
+        if t.get_text() != label:
+            continue
+        if hasattr(h, "set_linewidth"):
+            h.set_linewidth(h.get_linewidth() + extra_lw)
+        if hasattr(h, "set_linestyle"):
+            h.set_linestyle(dash_pattern)
+    return leg
+
+
 # ============================================================================
 # 6. VOLUME LOADING + VALIDATION (exact official B_late folders only)
 # ============================================================================
@@ -1470,13 +1490,15 @@ def plot_descriptor_curve(ax, curve_entry, show_legend=False):
     ax.margins(x=0.02, y=0.06)
 
     if show_legend:
-        # Longer handles (handlelength=3.2) so the SurVol dash pattern shows
-        # a full dash-gap-dash cycle inside the legend swatch instead of
-        # reading as a near-solid short segment.
+        # Longer handles so the SurVol dash pattern shows multiple full
+        # dash-gap cycles inside the legend swatch instead of reading as a
+        # near-solid short segment; the SurVol handle is then further
+        # emphasized (bolder, wider-spaced dashes) for the legend only.
         leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
-                        framealpha=0.94, handlelength=3.2, borderpad=0.45, labelspacing=0.38)
+                        framealpha=0.94, handlelength=4.2, borderpad=0.45, labelspacing=0.38)
         leg.get_frame().set_linewidth(0.6)
         leg.set_zorder(8)
+        _emphasize_dashed_legend_handle(leg, LABELS["gan"])
 
 
 def build_panel_b(fig, card, curves):
@@ -1550,8 +1572,10 @@ def plot_interface_fingerprint(ax, panel_metrics):
     # letting matplotlib pick the least-overlapping corner keeps every
     # curve visible.
     leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
-                    framealpha=0.94, handlelength=2.8, borderpad=0.4, labelspacing=0.32, fontsize=7.0)
+                    framealpha=0.94, handlelength=3.8, markerscale=1.2, borderpad=0.42,
+                    labelspacing=0.36, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
+    _emphasize_dashed_legend_handle(leg, LABELS["gan"])
 
 
 def plot_active_fragmentation(ax, euler_resolved, component_means):
@@ -1586,8 +1610,14 @@ def plot_active_fragmentation(ax, euler_resolved, component_means):
     # while the smallest tiny-component-fraction markers stay clearly visible.
     ax.margins(y=0.40)
 
+    # This legend has no lines (scatter markers only), so the previous
+    # tight labelspacing/handletextpad made the circle/diamond/triangle
+    # samples crowd into one another at this figure's small legend font.
+    # Generous vertical spacing + a larger markerscale keeps each of the
+    # three marker identities clearly separated and readable.
     leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
-                    framealpha=0.94, handlelength=2.0, borderpad=0.4, labelspacing=0.32, fontsize=7.0)
+                    framealpha=0.94, handlelength=1.8, handletextpad=0.9,
+                    borderpad=0.6, labelspacing=1.15, markerscale=1.4, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
 
 
