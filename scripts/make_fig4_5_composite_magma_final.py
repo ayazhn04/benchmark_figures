@@ -932,17 +932,20 @@ def load_active_component_summary_csv() -> dict:
 
 
 def cross_check_component_sources_optional(by_sample_means: dict) -> list:
-    """Best-effort cross-check of by-sample means against the JSON report
-    and the summary CSV. Either source is skipped (with a logged note,
-    surfaced later as a fallback note) if it cannot be loaded/parsed at
-    all; but if a source DOES load, a genuine disagreement beyond
-    tolerance still stops the run rather than being silently ignored."""
+    """Best-effort cross-check of by-sample means (the source of truth)
+    against the JSON report and the summary CSV. Either source is skipped
+    -- with a logged note, NOT counted under fallbacks_used, since the
+    by-sample CSV remains the primary source either way -- if it cannot
+    be loaded/parsed at all (the summary CSV in particular is known to
+    carry awkward pandas multi-index headers); but if a source DOES
+    load, a genuine disagreement beyond tolerance still stops the run
+    rather than being silently ignored."""
     notes = []
 
     try:
         json_means = load_active_component_json()
     except Exception as exc:
-        note = f"active-component JSON cross-check skipped ({exc})"
+        note = f"optional JSON cross-check skipped ({exc})"
         log(f"[components] {note}")
         notes.append(note)
         json_means = None
@@ -960,7 +963,7 @@ def cross_check_component_sources_optional(by_sample_means: dict) -> list:
     try:
         summary_means = load_active_component_summary_csv()
     except Exception as exc:
-        note = f"active-component summary CSV cross-check skipped ({exc})"
+        note = f"optional summary CSV cross-check skipped ({exc})"
         log(f"[components] {note}")
         notes.append(note)
         summary_means = None
@@ -999,25 +1002,55 @@ def check_component_sanity(by_sample_means: dict):
 # or the script prints the available curve names and stops.
 # ============================================================================
 
-CURVE_SLOT_1 = ("active_same_tpcf", "Active same-phase TPCF",
-                ["tpcf_active_active", "tpcf_same_active", "active_same_phase_tpcf",
-                 "active_radial_tpcf", "tpcf_1_1", "same_phase_tpcf_active", "radial_tpcf_active"])
-CURVE_SLOT_2 = ("pore_active_cross_tpcf", "Pore–active cross TPCF",
-                ["tpcf_pore_active", "cross_tpcf_pore_active", "tpcf_0_1",
-                 "pore_active_cross_tpcf", "cross_phase_tpcf_pore_active"])
-CURVE_SLOT_3 = ("active_chord", "Active chord-length distribution",
-                ["chord_length_active", "active_chord_length", "chord_hist_active",
-                 "active_chord_histogram", "chord_active", "chord_length_hist_active"])
-CURVE_SLOT_4_CANDIDATES = [
-    ("cbd_same_tpcf", "CBD same-phase TPCF",
-     ["tpcf_cbd_cbd", "cbd_same_phase_tpcf", "tpcf_2_2", "radial_tpcf_cbd"]),
-    ("cbd_chord", "CBD chord-length distribution",
-     ["chord_length_cbd", "cbd_chord_length", "chord_cbd", "chord_hist_cbd"]),
-    ("local_active_heterogeneity", "Local active-fraction heterogeneity",
-     ["local_active_fraction_heterogeneity", "local_heterogeneity_active", "local_active_heterogeneity"]),
-    ("active_psd", "Radial PSD (active)",
-     ["psd_active", "radial_psd_active", "psd_radial_active"]),
+# Panel-b curve selection is candidate-based, not single-name-mandatory: for
+# each of the four 2x2-grid slots, candidates are tried IN PRIORITY ORDER
+# (exact official descriptor names, confirmed against the real
+# curve_profiles_long.csv) and the first candidate that passes full
+# validation (see try_load_curve_candidate) is used. A candidate that is
+# present but scientifically unusable (e.g. non-finite values for a
+# non-chord-hist family) is rejected and logged -- this is candidate
+# selection among official curves, never a fake/interpolated substitute,
+# so it is not recorded under fallbacks_used.
+SLOT_1_CANDIDATES = ["tpcf_active_radial", "lcc_tpcf_proxy_active_radial", "psd_active_radial",
+                     "lineal_path_active_x", "lineal_path_active_y", "lineal_path_active_z"]
+SLOT_2_CANDIDATES = ["cross_tpcf_pore_active_radial", "cross_tpcf_pore_cbd_radial",
+                     "cross_tpcf_active_cbd_radial"]
+SLOT_3_CANDIDATES = ["chord_hist_active_all_axes", "lineal_path_active_x", "lineal_path_active_y",
+                     "lineal_path_active_z", "psd_active_radial", "lcc_tpcf_proxy_active_radial"]
+SLOT_4_CANDIDATES = ["tpcf_cbd_radial", "psd_cbd_radial", "lcc_tpcf_proxy_cbd_radial",
+                     "chord_hist_cbd_all_axes", "lineal_path_cbd_x", "lineal_path_cbd_y",
+                     "lineal_path_cbd_z"]
+
+PANEL_B_SLOTS = [
+    ("slot1_active_same_phase", "SLOT 1 active same-phase structure", SLOT_1_CANDIDATES),
+    ("slot2_cross_phase_pore_active", "SLOT 2 cross-phase pore-active structure", SLOT_2_CANDIDATES),
+    ("slot3_domain_size_continuity", "SLOT 3 domain-size / continuity structure", SLOT_3_CANDIDATES),
+    ("slot4_cbd_minority_phase", "SLOT 4 CBD / minority-phase structure", SLOT_4_CANDIDATES),
 ]
+
+# Concise plot titles for every known official descriptor (covers all
+# candidates above plus the other identities that may appear in the file,
+# so a future candidate-list edit doesn't need a matching title edit).
+DESCRIPTOR_TITLES = {
+    "tpcf_active_radial": "Active same-phase TPCF", "psd_active_radial": "Active radial PSD",
+    "lcc_tpcf_proxy_active_radial": "Active LCC-TPCF proxy",
+    "lineal_path_active_x": "Active lineal path (X)", "lineal_path_active_y": "Active lineal path (Y)",
+    "lineal_path_active_z": "Active lineal path (Z)",
+    "chord_hist_active_all_axes": "Active chord-length distribution",
+    "cross_tpcf_pore_active_radial": "Pore–active cross TPCF",
+    "cross_tpcf_pore_cbd_radial": "Pore–CBD cross TPCF",
+    "cross_tpcf_active_cbd_radial": "Active–CBD cross TPCF",
+    "tpcf_cbd_radial": "CBD same-phase TPCF", "psd_cbd_radial": "CBD radial PSD",
+    "lcc_tpcf_proxy_cbd_radial": "CBD LCC-TPCF proxy",
+    "chord_hist_cbd_all_axes": "CBD chord-length distribution",
+    "lineal_path_cbd_x": "CBD lineal path (X)", "lineal_path_cbd_y": "CBD lineal path (Y)",
+    "lineal_path_cbd_z": "CBD lineal path (Z)",
+    "tpcf_pore_radial": "Pore same-phase TPCF", "psd_pore_radial": "Pore radial PSD",
+    "lcc_tpcf_proxy_pore_radial": "Pore LCC-TPCF proxy",
+    "chord_hist_pore_all_axes": "Pore chord-length distribution",
+    "lineal_path_pore_x": "Pore lineal path (X)", "lineal_path_pore_y": "Pore lineal path (Y)",
+    "lineal_path_pore_z": "Pore lineal path (Z)",
+}
 
 
 # The official curve-profiles CSV is a long PER-SAMPLE table (one row per
@@ -1118,63 +1151,118 @@ def resolve_curve_id(df: pd.DataFrame, sch: dict, aliases: list):
 EXPECTED_SAMPLES_PER_CURVE = 50
 
 
-def load_curve_group_data(df: pd.DataFrame, sch: dict, curve_id_values: tuple) -> dict:
-    readable = dict(zip(sch["id_cols"], curve_id_values))
-    sub = df[_row_mask_for_curve_id(df, sch["id_cols"], curve_id_values)].copy()
-    if sub.empty:
-        raise RuntimeError(f"[curve] {readable}: no rows matched this curve identity")
-    sub["_mapped_group"] = sub[sch["group"]].map(map_curve_source_to_group)
-    sub["_x"] = pd.to_numeric(sub[sch["x"]], errors="coerce")
-    sub["_val"] = pd.to_numeric(sub[sch["value"]], errors="coerce")
-    if sub["_x"].isna().any() or sub["_val"].isna().any():
-        raise RuntimeError(f"[curve] {readable}: non-numeric/non-finite r or value entries")
+def try_load_curve_candidate(curve_df: pd.DataFrame, sch: dict, descriptor_name: str):
+    """Attempts to load and fully validate ONE candidate curve by exact
+    'descriptor' value (falling back to the composite identity resolver
+    only if the exact descriptor string isn't present). Never raises:
+    returns (result_dict, None) on success or (None, reason_str) on
+    failure, so the caller can try the next candidate in priority order.
 
-    out = {}
+    result_dict = {"data": {group: {x,y,std,count}}, "info": {...}}
+    """
+    desc_col = sch["id_cols"][1]  # CURVE_ID_COLS_CANDIDATES[1] == "descriptor"
+    exact_mask = match_curve_value(curve_df[desc_col], descriptor_name)
+    if exact_mask.any():
+        sub = curve_df[exact_mask].copy()
+    else:
+        values = resolve_curve_id(curve_df, sch, [descriptor_name])
+        if values is None:
+            return None, f"descriptor '{descriptor_name}' not found in {CURVE_PROFILES.name}"
+        sub = curve_df[_row_mask_for_curve_id(curve_df, sch["id_cols"], values)].copy()
+
+    n_rows = len(sub)
+    if n_rows == 0:
+        return None, "matched 0 rows"
+
+    family_col, phase_col, pair_col, axis_col = sch["id_cols"][0], sch["id_cols"][2], sch["id_cols"][3], sch["id_cols"][4]
+    family_val = str(sub[family_col].iloc[0])
+    raw_sources = sorted(sub[sch["group"]].astype(str).unique())
+    sub["_mapped_group"] = sub[sch["group"]].map(map_curve_source_to_group)
+    mapped_present = sorted(sub["_mapped_group"].dropna().unique().tolist())
+    n_samples_per_group = {
+        g: (int(sub.loc[sub["_mapped_group"] == g, sch["sample_id"]].nunique())
+            if sch["sample_id"] is not None else int((sub["_mapped_group"] == g).sum()))
+        for g in GROUPS
+    }
+    log(f"[curves] candidate '{descriptor_name}': {n_rows} matched rows, raw sources={raw_sources}, "
+        f"mapped groups present={mapped_present}, rows/group="
+        f"{ {g: int((sub['_mapped_group'] == g).sum()) for g in GROUPS} }, "
+        f"unique sample_id/group={n_samples_per_group}")
+
+    sub["_r"] = pd.to_numeric(sub[sch["x"]], errors="coerce")
+    sub["_val"] = pd.to_numeric(sub[sch["value"]], errors="coerce")
+    n_bad_r = int((~np.isfinite(sub["_r"])).sum())
+    n_bad_val = int((~np.isfinite(sub["_val"])).sum())
+    if n_bad_r or n_bad_val:
+        bad = sub[(~np.isfinite(sub["_r"])) | (~np.isfinite(sub["_val"]))]
+        log(f"[curves] candidate '{descriptor_name}': {n_bad_r} non-finite/non-numeric 'r', "
+            f"{n_bad_val} non-finite/non-numeric 'value'; first rows: "
+            f"{bad.head(5)[[sch['group'], sch['x'], sch['value']]].to_dict('records')}")
+
+    if n_bad_r > 0:
+        return None, f"{n_bad_r} non-finite/non-numeric 'r' entries"
+
+    if n_bad_val > 0:
+        if family_val.lower().startswith("chord"):
+            # Documented, explicit exception: chord-hist NaN "value" entries
+            # (a chord histogram legitimately has no count at some lengths)
+            # may be filled with 0 -- and ONLY for family=="chord_hist*".
+            sub["_val"] = sub["_val"].fillna(0.0)
+            log(f"[curves] candidate '{descriptor_name}': filled {n_bad_val} NaN chord 'value' "
+                f"entries with 0.0 (chord_hist family only, documented exception)")
+        else:
+            return None, f"{n_bad_val} non-finite/non-numeric 'value' entries (family '{family_val}' " \
+                         f"is not chord_hist, so these are not filled)"
+
+    for g in GROUPS:
+        if g not in mapped_present:
+            return None, f"mapped group '{g}' has no rows (raw sources present: {raw_sources})"
+
+    per_group = {}
     for g in GROUPS:
         gsub = sub[sub["_mapped_group"] == g]
-        if gsub.empty:
-            raise RuntimeError(f"[curve] {readable}: mapped group '{g}' has no rows (raw source "
-                                f"values present: {sorted(sub[sch['group']].astype(str).unique())})")
-        # group by (_mapped_group, ...id..., r) and aggregate mean/std/count
-        # over the per-sample "value" column, per task instructions.
         if sch["sample_id"] is not None:
-            count = gsub.groupby("_x")[sch["sample_id"]].nunique()
+            count = gsub.groupby("_r")[sch["sample_id"]].nunique()
         else:
-            count = gsub.groupby("_x")["_val"].count()
-        agg = gsub.groupby("_x")["_val"].agg(["mean", "std"])
-        agg = agg.join(count.rename("count")).reset_index().sort_values("_x")
-        x = agg["_x"].to_numpy(float)
+            count = gsub.groupby("_r")["_val"].count()
+        agg = gsub.groupby("_r")["_val"].agg(["mean", "std"])
+        agg = agg.join(count.rename("count")).reset_index().sort_values("_r")
+        x = agg["_r"].to_numpy(float)
         y = agg["mean"].to_numpy(float)
         std = agg["std"].to_numpy(float)
         cnt = agg["count"].to_numpy(int)
         if not np.all(np.isfinite(x) & np.isfinite(y) & np.isfinite(std)):
-            raise RuntimeError(f"[curve] {readable} group '{g}': non-finite aggregated r/mean/std "
-                                f"values (a NaN std usually means a coordinate had only 1 sample)")
+            return None, f"group '{g}': non-finite aggregated r/mean/std (a NaN std usually means " \
+                         f"a coordinate had only 1 sample)"
         if not np.all(cnt == cnt[0]):
-            raise RuntimeError(f"[curve] {readable} group '{g}': sample count varies across r "
-                                f"coordinates ({dict(zip(x.tolist(), cnt.tolist()))}) -- stopping "
-                                f"rather than plotting an inconsistently-sampled curve")
+            return None, f"group '{g}': sample count varies across r ({dict(zip(x.tolist(), cnt.tolist()))})"
         if cnt[0] != EXPECTED_SAMPLES_PER_CURVE:
-            raise RuntimeError(f"[curve] {readable} group '{g}': {cnt[0]} samples per r-coordinate, "
-                                f"expected exactly {EXPECTED_SAMPLES_PER_CURVE} -- stopping (no "
-                                f"documented reason for a different count)")
-        out[g] = {"x": x, "y": y, "std": std, "count": cnt}
-        log(f"[curves] {readable} group '{g}': {len(x)} r-coordinates, "
-            f"{cnt[0]} samples/coordinate")
+            return None, f"group '{g}': {cnt[0]} samples/r-coordinate, expected exactly " \
+                         f"{EXPECTED_SAMPLES_PER_CURVE}"
+        per_group[g] = {"x": x, "y": y, "std": std, "count": cnt}
 
-    ref_x = out["real"]["x"]
+    ref_x = per_group["real"]["x"]
     for g in GROUPS:
-        if out[g]["x"].shape != ref_x.shape or not np.allclose(out[g]["x"], ref_x):
-            raise RuntimeError(
-                f"[curve] {readable}: r-coordinate grid for group '{g}' differs from 'real' -- "
-                f"refusing to interpolate, stopping without saving")
-    return out
+        if per_group[g]["x"].shape != ref_x.shape or not np.allclose(per_group[g]["x"], ref_x):
+            return None, f"group '{g}' r-coordinate grid differs from 'real' -- refusing to interpolate"
+
+    info = {
+        "descriptor": descriptor_name, "family": family_val,
+        "phase": (sub[phase_col].iloc[0] if pd.notna(sub[phase_col].iloc[0]) else None),
+        "pair": (sub[pair_col].iloc[0] if pd.notna(sub[pair_col].iloc[0]) else None),
+        "axis": (sub[axis_col].iloc[0] if pd.notna(sub[axis_col].iloc[0]) else None),
+        "n_r_coords": int(len(ref_x)),
+        "samples_per_group": {g: int(per_group[g]["count"][0]) for g in GROUPS},
+        "filled_nan_chord_values": int(n_bad_val) if (n_bad_val > 0 and family_val.lower().startswith("chord")) else 0,
+    }
+    return {"data": per_group, "info": info}, None
 
 
 def resolve_panel_b_curves(curve_df: pd.DataFrame):
     sch = curve_schema(curve_df)
 
-    # ---- source/group mapping diagnostics (printed before any resolution) --
+    # ---- source/group mapping diagnostics (printed before any resolution;
+    # unchanged from the working version) -----------------------------------
     raw_sources = sorted(curve_df[sch["group"]].astype(str).unique())
     log(f"[curves] unique raw '{sch['group']}' values in {CURVE_PROFILES.name}: {raw_sources}")
     mapped = curve_df[sch["group"]].map(map_curve_source_to_group)
@@ -1194,38 +1282,35 @@ def resolve_panel_b_curves(curve_df: pd.DataFrame):
     log(f"[curves] {len(distinct_ids)} distinct curve identities available in {CURVE_PROFILES.name} "
         f"(columns {sch['id_cols']}): {readable_ids}")
 
-    resolved_slots = []
-    for key, title, aliases in (CURVE_SLOT_1, CURVE_SLOT_2, CURVE_SLOT_3):
-        values = resolve_curve_id(curve_df, sch, aliases)
-        if values is None:
-            raise RuntimeError(
-                f"[curves] could not resolve required curve slot '{key}' ({title}) from any of "
-                f"{aliases} against the available curve identities above -- stopping rather than "
-                f"inventing a plot. Available curve identities: {readable_ids}")
-        resolved_slots.append((key, title, values))
-        log(f"[curves] slot '{key}' ({title}) resolved to {dict(zip(sch['id_cols'], values))}")
-
-    slot4 = None
-    for key, title, aliases in CURVE_SLOT_4_CANDIDATES:
-        values = resolve_curve_id(curve_df, sch, aliases)
-        if values is not None:
-            slot4 = (key, title, values)
-            log(f"[curves] slot 'slot4' resolved to '{key}' ({title}) -> "
-                f"{dict(zip(sch['id_cols'], values))}")
-            break
-    if slot4 is None:
-        raise RuntimeError(
-            f"[curves] none of the slot-4 candidates resolved "
-            f"({[c[0] for c in CURVE_SLOT_4_CANDIDATES]}) -- stopping rather than inventing a "
-            f"plot. Available curve identities: {readable_ids}")
-    resolved_slots.append(slot4)
-
     curves = {}
-    for key, title, values in resolved_slots:
-        raw_name = ", ".join(f"{c}={v}" for c, v in zip(sch["id_cols"], values) if pd.notna(v))
-        curves[key] = {"title": title, "raw_name": raw_name,
-                       "data": load_curve_group_data(curve_df, sch, values)}
-    return curves
+    all_rejections = {}
+    for slot_key, slot_label, candidates in PANEL_B_SLOTS:
+        log(f"[curves] {slot_label}:")
+        rejections = []
+        selected = None
+        for cand in candidates:
+            result, reason = try_load_curve_candidate(curve_df, sch, cand)
+            if result is None:
+                log(f"[curves]   rejected {cand}: {reason}")
+                rejections.append({"descriptor": cand, "reason": reason})
+                continue
+            log(f"[curves]   selected {cand}: passed, {result['info']['n_r_coords']} r-coordinates, "
+                f"{EXPECTED_SAMPLES_PER_CURVE} samples/group/coordinate")
+            selected = (cand, result)
+            break
+
+        if selected is None:
+            raise RuntimeError(
+                f"[curves] {slot_label}: none of the candidates {candidates} passed validation -- "
+                f"stopping rather than inventing a plot. Rejections: {rejections}")
+
+        cand_name, result = selected
+        title = DESCRIPTOR_TITLES.get(cand_name, cand_name)
+        curves[slot_key] = {"title": title, "raw_name": cand_name, "data": result["data"],
+                            "info": result["info"], "rejections": rejections}
+        all_rejections[slot_key] = rejections
+
+    return curves, all_rejections
 
 
 # ============================================================================
@@ -1376,12 +1461,26 @@ FRAGMENTATION_LABELS = ["Active Euler\n|χ|", "Active\ncomponents", "Singleton\n
 def plot_interface_fingerprint(ax, panel_metrics):
     style_axis(ax)
     ax.set_title("Interface / contact-hierarchy fingerprint", pad=4.5, color=TEXT, fontweight="bold")
-    ax.set_ylabel("Density / proxy value", color=SUBTEXT)
+    ax.set_ylabel("Density / fraction (log scale)", color=SUBTEXT)
+    ax.set_yscale("log")
+
+    # Interface densities, the TPB proxy density, and CBD contact fractions
+    # span different units/magnitudes; a shared linear axis flattens the
+    # smaller ones, so this uses a shared log axis instead (kept simple
+    # rather than a per-metric ratio-to-Reference normalization).
+    all_vals = np.array([panel_metrics[key][g] for key in FINGERPRINT_ORDER for g in GROUPS], dtype=float)
+    positive = all_vals[all_vals > 0]
+    floor = float(positive.min()) / 10.0 if positive.size else 1e-6
 
     xs = np.arange(len(FINGERPRINT_ORDER))
     for g in GROUPS:
-        vals = [panel_metrics[key][g] for key in FINGERPRINT_ORDER]
-        ax.plot(xs, vals, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
+        vals = np.array([panel_metrics[key][g] for key in FINGERPRINT_ORDER], dtype=float)
+        n_floored = int(np.sum(vals <= 0))
+        if n_floored:
+            log(f"[panel-c] group '{g}': {n_floored} fingerprint value(s) <= 0, floored to "
+                f"{floor:.3e} for log-scale display only (underlying values unchanged elsewhere)")
+        vals_plot = np.where(vals > 0, vals, floor)
+        ax.plot(xs, vals_plot, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
                 marker=MARKERS[g], markersize=5.5, markerfacecolor=COLORS[g],
                 markeredgecolor="black", markeredgewidth=0.6,
                 label=LABELS[g], zorder=3 if g == "real" else 4)
@@ -1546,14 +1645,17 @@ def main():
 
     # ---- panel c: active-component diagnostic (by-sample primary) ---------
     component_means = load_active_component_means_from_by_sample()
-    fallback_notes.extend(cross_check_component_sources_optional(component_means))
+    # Not a fallback: the by-sample CSV is the primary source of truth
+    # either way, so a skipped JSON/summary-CSV cross-check is logged
+    # separately rather than under fallbacks_used.
+    component_cross_check_notes = cross_check_component_sources_optional(component_means)
     check_component_sanity(component_means)
 
     fingerprint_values = {key: {g: panel_metrics[key][g] for g in GROUPS} for key in FINGERPRINT_ORDER}
 
     # ---- panel b: official curves -------------------------------------------
     curve_df = _load_metric_csv(CURVE_PROFILES)
-    curves = resolve_panel_b_curves(curve_df)
+    curves, curve_rejections = resolve_panel_b_curves(curve_df)
 
     # ---- canvas -------------------------------------------------------------
     fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=BG)
@@ -1603,9 +1705,16 @@ def main():
             for g in GROUPS
         },
         "panel_b_curves": {
-            key: {"title": curves[key]["title"], "raw_name": curves[key]["raw_name"]}
+            key: {"slot": key, "selected_descriptor": curves[key]["raw_name"],
+                  "family": curves[key]["info"]["family"], "phase": curves[key]["info"]["phase"],
+                  "pair": curves[key]["info"]["pair"], "axis": curves[key]["info"]["axis"],
+                  "title": curves[key]["title"], "n_r_coords": curves[key]["info"]["n_r_coords"],
+                  "samples_per_group": curves[key]["info"]["samples_per_group"],
+                  "filled_nan_chord_values": curves[key]["info"]["filled_nan_chord_values"],
+                  "candidates_rejected_before_selection": curves[key]["rejections"]}
             for key in curves
         },
+        "panel_b_curve_candidate_rejections": curve_rejections,
         "panel_c_metrics": {
             key: {"raw_name": panel_metrics[key]["raw_name"], "real": panel_metrics[key]["real"],
                   "diffusion": panel_metrics[key]["diffusion"], "gan": panel_metrics[key]["gan"],
@@ -1615,10 +1724,11 @@ def main():
         "active_euler_abs": {"real": euler_row["real"], "diffusion": euler_row["diffusion"],
                               "gan": euler_row["gan"], "source": euler_row["source"]},
         "active_component_means_by_sample": component_means,
+        "component_cross_check_notes": component_cross_check_notes,
         "fallbacks_used": fallback_notes,
         "saved": {"png": str(png), "pdf": str(pdf), "svg": str(svg), "tiff": str(tif_out)},
     }
-    AUDIT_JSON.write_text(json.dumps(audit, indent=2))
+    AUDIT_JSON.write_text(json.dumps(audit, indent=2, default=str))
 
     # =========================== SUMMARY ========================================
     log("\nVolume folders:")
@@ -1632,12 +1742,22 @@ def main():
             f"tx={r['tx']:.6f} ty={r['ty']:.6f} tz={r['tz']:.6f}")
 
     log("\nPanel b curves resolved:")
-    for key in curves:
-        log(f"  {key}: '{curves[key]['raw_name']}' -> \"{curves[key]['title']}\"")
+    for slot_key, slot_label, _candidates in PANEL_B_SLOTS:
+        log(f"[curves] {slot_label}:")
+        for rej in curves[slot_key]["rejections"]:
+            log(f"  rejected {rej['descriptor']}: {rej['reason']}")
+        info = curves[slot_key]["info"]
+        log(f"  selected {curves[slot_key]['raw_name']}: passed, {info['n_r_coords']} r-coordinates, "
+            f"{EXPECTED_SAMPLES_PER_CURVE} samples/group/coordinate -> \"{curves[slot_key]['title']}\"")
 
     log("\nActive-component diagnostic means (by-sample, primary source of truth):")
     for g in GROUPS:
         log(f"  {g}: {component_means[g]}")
+
+    if component_cross_check_notes:
+        log("\nComponent cross-check notes (not fallbacks -- by-sample CSV remains the source of truth):")
+        for note in component_cross_check_notes:
+            log(f"  - {note}")
 
     log("\nFallbacks used:")
     if fallback_notes:
