@@ -42,6 +42,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.colors import ListedColormap
+from matplotlib.lines import Line2D
 
 warnings.filterwarnings("ignore")
 
@@ -350,24 +351,33 @@ def image_cell(ax, color, lw=CELL_LW):
         sp.set_color(color)
 
 
-def _emphasize_dashed_legend_handle(leg, label: str, extra_lw: float = 1.0,
-                                     dash_pattern=(0, (7.0, 3.4))):
-    """Post-processes ONE legend entry's proxy handle -- never the actual
-    plotted artist, which is untouched -- so a dashed line (SurVol) reads
-    unmistakably even at this figure's small legend size: a bolder,
-    wider-spaced dash pattern and a slightly thicker stroke for the legend
-    swatch only."""
-    handles = getattr(leg, "legend_handles", None)
-    if handles is None:
-        handles = getattr(leg, "legendHandles", [])
-    for h, t in zip(handles, leg.get_texts()):
-        if t.get_text() != label:
-            continue
-        if hasattr(h, "set_linewidth"):
-            h.set_linewidth(h.get_linewidth() + extra_lw)
-        if hasattr(h, "set_linestyle"):
-            h.set_linestyle(dash_pattern)
-    return leg
+def _group_legend_handles(with_markers: bool):
+    """Builds explicit, fully-styled proxy Line2D handles for the three
+    groups (Reference/MicroGen3D/SurVol) up front, matching each group's
+    real plotted style exactly (same LINESTYLES/LINEWIDTHS/MARKERS/COLORS),
+    so the legend swatch is never bolder or thinner than the actual curves.
+
+    When a handle also carries a marker (with_markers=True, for panel
+    c-left, whose curves have both a line and a marker), the handle uses
+    TWO x-positions (markers at both ends of the swatch, numpoints=2 at the
+    call site) rather than matplotlib's default single centered marker: a
+    one-marker-in-the-middle handle unreliably renders a custom dash
+    pattern around that marker in this matplotlib version -- the gaps can
+    silently collapse and the swatch reads as a solid bar even though
+    every dash-pattern/linewidth property is set correctly. Two markers
+    with a real multi-segment dashed line between them renders the dashes
+    reliably. Panel b's handles (with_markers=False) have no marker at all,
+    so a single point is fine there."""
+    handles = []
+    for g in GROUPS:
+        xdata = [0, 1] if with_markers else [0]
+        ydata = [0, 0] if with_markers else [0]
+        kwargs = dict(color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g])
+        if with_markers:
+            kwargs.update(marker=MARKERS[g], markersize=5.5, markerfacecolor=COLORS[g],
+                          markeredgecolor="black", markeredgewidth=0.6)
+        handles.append(Line2D(xdata, ydata, **kwargs))
+    return handles, [LABELS[g] for g in GROUPS]
 
 
 # ============================================================================
@@ -1490,15 +1500,15 @@ def plot_descriptor_curve(ax, curve_entry, show_legend=False):
     ax.margins(x=0.02, y=0.06)
 
     if show_legend:
-        # Longer handles so the SurVol dash pattern shows multiple full
-        # dash-gap cycles inside the legend swatch instead of reading as a
-        # near-solid short segment; the SurVol handle is then further
-        # emphasized (bolder, wider-spaced dashes) for the legend only.
-        leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
-                        framealpha=0.94, handlelength=4.2, borderpad=0.45, labelspacing=0.38)
+        # Explicit proxy handles (see _group_legend_handles) so SurVol's
+        # dashed style is baked in from the start -- a longer handlelength
+        # lets multiple dash-gap cycles show clearly in the swatch.
+        legend_handles, legend_labels = _group_legend_handles(with_markers=False)
+        leg = ax.legend(legend_handles, legend_labels, loc="upper right", frameon=True,
+                        facecolor="white", edgecolor=SPINE, framealpha=0.94, handlelength=3.6,
+                        borderpad=0.45, labelspacing=0.38)
         leg.get_frame().set_linewidth(0.6)
         leg.set_zorder(8)
-        _emphasize_dashed_legend_handle(leg, LABELS["gan"])
 
 
 def build_panel_b(fig, card, curves):
@@ -1570,12 +1580,16 @@ def plot_interface_fingerprint(ax, panel_metrics):
     # (which metric is lowest/highest) is data-dependent, so a fixed corner
     # can end up sitting on top of a curve (e.g. a near-zero first point);
     # letting matplotlib pick the least-overlapping corner keeps every
-    # curve visible.
-    leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
-                    framealpha=0.94, handlelength=3.8, markerscale=1.2, borderpad=0.42,
-                    labelspacing=0.36, fontsize=7.0)
+    # curve visible. Explicit proxy handles (see _group_legend_handles) so
+    # SurVol's dashed style is baked in from the start; these handles carry
+    # both a line and a marker, with markers at BOTH ends (numpoints=2) so
+    # the dashed line between them renders reliably -- see
+    # _group_legend_handles for why a single centered marker is avoided.
+    legend_handles, legend_labels = _group_legend_handles(with_markers=True)
+    leg = ax.legend(legend_handles, legend_labels, loc="best", frameon=True, facecolor="white",
+                    edgecolor=SPINE, framealpha=0.94, handlelength=5.5, numpoints=2,
+                    borderpad=0.42, labelspacing=0.36, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
-    _emphasize_dashed_legend_handle(leg, LABELS["gan"])
 
 
 def plot_active_fragmentation(ax, euler_resolved, component_means):
@@ -1610,14 +1624,20 @@ def plot_active_fragmentation(ax, euler_resolved, component_means):
     # while the smallest tiny-component-fraction markers stay clearly visible.
     ax.margins(y=0.40)
 
-    # This legend has no lines (scatter markers only), so the previous
-    # tight labelspacing/handletextpad made the circle/diamond/triangle
-    # samples crowd into one another at this figure's small legend font.
-    # Generous vertical spacing + a larger markerscale keeps each of the
-    # three marker identities clearly separated and readable.
-    leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
-                    framealpha=0.94, handlelength=1.8, handletextpad=0.9,
-                    borderpad=0.6, labelspacing=1.15, markerscale=1.4, fontsize=7.0)
+    # Explicit marker-only proxy handles (linestyle="None", a fixed small
+    # markersize independent of the plot's own s=70 scatter size) rather
+    # than relying on the automatic scatter-legend translation -- gives
+    # precise, predictable control so the circle/diamond/triangle stay
+    # small and clearly separated instead of crowding into each other.
+    legend_handles = [
+        Line2D([0], [0], marker=MARKERS[g], linestyle="None", markersize=6.0,
+               markerfacecolor=COLORS[g], markeredgecolor="black", markeredgewidth=0.8)
+        for g in GROUPS
+    ]
+    legend_labels = [LABELS[g] for g in GROUPS]
+    leg = ax.legend(legend_handles, legend_labels, loc="upper right", frameon=True,
+                    facecolor="white", edgecolor=SPINE, framealpha=0.94, handlelength=1.4,
+                    handletextpad=0.7, borderpad=0.55, labelspacing=0.75, fontsize=6.6)
     leg.get_frame().set_linewidth(0.6)
 
 
