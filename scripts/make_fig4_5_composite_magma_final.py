@@ -1020,17 +1020,26 @@ CURVE_SLOT_4_CANDIDATES = [
 ]
 
 
+# The official curve-profiles CSV is a long PER-SAMPLE table (one row per
+# source x sample_id x descriptor-combo x r), identified by curve family
+# via five columns together -- family, descriptor, phase, pair, axis --
+# not a single curve-name column, and with no precomputed mean/std/count:
+# those must be aggregated here from the per-sample "value" column. The
+# group/source column is literally named "source".
+CURVE_ID_COLS_CANDIDATES = ["family", "descriptor", "phase", "pair", "axis"]
+
+
 def curve_schema(df: pd.DataFrame) -> dict:
     return {
-        "curve": pick_col(df, ["curve", "curve_name", "metric", "metric_name", "descriptor", "name"],
-                          "curve-identifier column"),
-        "group": pick_col(df, ["group", "set", "model", "category", "class"], "curve group column"),
-        "x": pick_col(df, ["x", "r", "radius_vox", "radius", "lag", "bin", "bin_center",
+        "group": pick_col(df, ["source", "group", "set", "model", "category", "class"],
+                          "curve group/source column"),
+        "id_cols": [pick_col(df, [c], f"curve '{c}' column") for c in CURVE_ID_COLS_CANDIDATES],
+        "sample_id": pick_col(df, ["sample_id", "sample", "id"], "curve sample-id column",
+                              required=False),
+        "x": pick_col(df, ["r", "x", "radius_vox", "radius", "lag", "bin", "bin_center",
                            "coord", "chord_length"], "curve x column"),
-        "mean": pick_col(df, ["mean", "y_mean", "value_mean", "y", "value", "mean_value"],
-                         "curve mean column"),
-        "std": pick_col(df, ["std", "y_std", "value_std", "sd", "stdev", "std_value"],
-                        "curve std column", required=False),
+        "value": pick_col(df, ["value", "mean", "y_mean", "value_mean", "y", "mean_value"],
+                          "curve value column"),
     }
 
 
@@ -1042,89 +1051,127 @@ def _map_curve_group(v) -> str | None:
     return None
 
 
-def resolve_curve_name(df: pd.DataFrame, sch: dict, aliases: list):
-    distinct = df[sch["curve"]].astype(str).unique()
-    distinct_norm = {}
-    for d in distinct:
-        distinct_norm.setdefault(_norm(d), d)
+def _curve_id_composite(id_cols: list, values: tuple) -> str:
+    """Normalized composite key over the (family, descriptor, phase, pair,
+    axis) tuple, used only for strict/alias name matching -- NaN/missing
+    components are simply omitted, never guessed."""
+    parts = [str(v) for v in values if pd.notna(v)]
+    return _norm("_".join(parts))
+
+
+def _row_mask_for_curve_id(df: pd.DataFrame, id_cols: list, values: tuple) -> pd.Series:
+    mask = pd.Series(True, index=df.index)
+    for c, v in zip(id_cols, values):
+        mask &= df[c].isna() if pd.isna(v) else (df[c] == v)
+    return mask
+
+
+def _distinct_curve_ids(df: pd.DataFrame, id_cols: list) -> list:
+    sub = df[id_cols].drop_duplicates()
+    return [tuple(row[c] for c in id_cols) for _, row in sub.iterrows()]
+
+
+def resolve_curve_id(df: pd.DataFrame, sch: dict, aliases: list):
+    """Returns the matching (family, descriptor, phase, pair, axis) tuple,
+    or None. Matches the composite of all five identifying columns'
+    values against the alias list -- exact composite match first, then a
+    substring fallback that must be unique."""
+    ids = _distinct_curve_ids(df, sch["id_cols"])
+    composites = {values: _curve_id_composite(sch["id_cols"], values) for values in ids}
 
     key_norms = [_norm(a) for a in aliases]
-    for k in key_norms:
-        if k in distinct_norm:
-            return distinct_norm[k]
+    for values, composite in composites.items():
+        if composite in key_norms:
+            return values
 
-    sub_matches = sorted({raw for dn, raw in distinct_norm.items()
-                          if any(k and (k in dn or dn in k) for k in key_norms)})
+    sub_matches = [values for values, composite in composites.items()
+                   if any(k and (k in composite or composite in k) for k in key_norms)]
     if len(sub_matches) == 1:
         return sub_matches[0]
     if len(sub_matches) > 1:
+        readable = [dict(zip(sch["id_cols"], v)) for v in sub_matches]
         raise RuntimeError(f"[curve] aliases {aliases} matched {len(sub_matches)} distinct curve "
-                            f"names ambiguously: {sub_matches}")
+                            f"identities ambiguously: {readable}")
     return None
 
 
-def load_curve_group_data(df: pd.DataFrame, sch: dict, curve_name: str) -> dict:
-    sub = df[df[sch["curve"]].astype(str) == curve_name].copy()
+def load_curve_group_data(df: pd.DataFrame, sch: dict, curve_id_values: tuple) -> dict:
+    readable = dict(zip(sch["id_cols"], curve_id_values))
+    sub = df[_row_mask_for_curve_id(df, sch["id_cols"], curve_id_values)].copy()
+    if sub.empty:
+        raise RuntimeError(f"[curve] {readable}: no rows matched this curve identity")
     sub["_group"] = sub[sch["group"]].map(_map_curve_group)
+    sub["_x"] = pd.to_numeric(sub[sch["x"]], errors="coerce")
+    sub["_val"] = pd.to_numeric(sub[sch["value"]], errors="coerce")
+    if sub["_x"].isna().any() or sub["_val"].isna().any():
+        raise RuntimeError(f"[curve] {readable}: non-numeric/non-finite x or value entries")
 
     out = {}
     for g in GROUPS:
-        s = sub[sub["_group"] == g].copy()
-        if s.empty:
-            raise RuntimeError(f"[curve] '{curve_name}': group '{g}' has no rows")
-        s = s.sort_values(sch["x"])
-        x = pd.to_numeric(s[sch["x"]], errors="coerce").to_numpy(float)
-        y = pd.to_numeric(s[sch["mean"]], errors="coerce").to_numpy(float)
-        std = None
-        if sch["std"] is not None:
-            std = pd.to_numeric(s[sch["std"]], errors="coerce").to_numpy(float)
-        if not np.all(np.isfinite(x) & np.isfinite(y)):
-            raise RuntimeError(f"[curve] '{curve_name}' group '{g}': non-finite x/y values")
-        out[g] = {"x": x, "y": y, "std": std}
+        gsub = sub[sub["_group"] == g]
+        if gsub.empty:
+            raise RuntimeError(f"[curve] {readable}: group '{g}' has no rows (source column "
+                                f"'{sch['group']}' values: {sorted(sub[sch['group']].astype(str).unique())})")
+        # group by (source, ...id..., r) and aggregate mean/std/count over
+        # the per-sample "value" column, per task instructions.
+        if sch["sample_id"] is not None:
+            count = gsub.groupby("_x")[sch["sample_id"]].nunique()
+        else:
+            count = gsub.groupby("_x")["_val"].count()
+        agg = gsub.groupby("_x")["_val"].agg(["mean", "std"])
+        agg = agg.join(count.rename("count")).reset_index().sort_values("_x")
+        out[g] = {"x": agg["_x"].to_numpy(float), "y": agg["mean"].to_numpy(float),
+                  "std": agg["std"].to_numpy(float), "count": agg["count"].to_numpy(int)}
+        if not np.all(np.isfinite(out[g]["x"]) & np.isfinite(out[g]["y"])):
+            raise RuntimeError(f"[curve] {readable} group '{g}': non-finite aggregated x/mean values")
 
     ref_x = out["real"]["x"]
     for g in GROUPS:
         if out[g]["x"].shape != ref_x.shape or not np.allclose(out[g]["x"], ref_x):
             raise RuntimeError(
-                f"[curve] '{curve_name}': coordinate grid for group '{g}' differs from 'real' -- "
+                f"[curve] {readable}: r-coordinate grid for group '{g}' differs from 'real' -- "
                 f"refusing to interpolate, stopping without saving")
     return out
 
 
 def resolve_panel_b_curves(curve_df: pd.DataFrame):
     sch = curve_schema(curve_df)
-    distinct_names = sorted(curve_df[sch["curve"]].astype(str).unique())
-    log(f"[curves] {len(distinct_names)} distinct curve names available in {CURVE_PROFILES.name}: "
-        f"{distinct_names}")
+    distinct_ids = _distinct_curve_ids(curve_df, sch["id_cols"])
+    readable_ids = [dict(zip(sch["id_cols"], v)) for v in distinct_ids]
+    log(f"[curves] {len(distinct_ids)} distinct curve identities available in {CURVE_PROFILES.name} "
+        f"(columns {sch['id_cols']}): {readable_ids}")
 
     resolved_slots = []
     for key, title, aliases in (CURVE_SLOT_1, CURVE_SLOT_2, CURVE_SLOT_3):
-        name = resolve_curve_name(curve_df, sch, aliases)
-        if name is None:
+        values = resolve_curve_id(curve_df, sch, aliases)
+        if values is None:
             raise RuntimeError(
                 f"[curves] could not resolve required curve slot '{key}' ({title}) from any of "
-                f"{aliases} against the available curve names above -- stopping rather than "
-                f"inventing a plot. Available curve names: {distinct_names}")
-        resolved_slots.append((key, title, name))
-        log(f"[curves] slot '{key}' ({title}) resolved to curve name '{name}'")
+                f"{aliases} against the available curve identities above -- stopping rather than "
+                f"inventing a plot. Available curve identities: {readable_ids}")
+        resolved_slots.append((key, title, values))
+        log(f"[curves] slot '{key}' ({title}) resolved to {dict(zip(sch['id_cols'], values))}")
 
     slot4 = None
     for key, title, aliases in CURVE_SLOT_4_CANDIDATES:
-        name = resolve_curve_name(curve_df, sch, aliases)
-        if name is not None:
-            slot4 = (key, title, name)
-            log(f"[curves] slot 'slot4' resolved to '{key}' ({title}) -> curve name '{name}'")
+        values = resolve_curve_id(curve_df, sch, aliases)
+        if values is not None:
+            slot4 = (key, title, values)
+            log(f"[curves] slot 'slot4' resolved to '{key}' ({title}) -> "
+                f"{dict(zip(sch['id_cols'], values))}")
             break
     if slot4 is None:
         raise RuntimeError(
             f"[curves] none of the slot-4 candidates resolved "
             f"({[c[0] for c in CURVE_SLOT_4_CANDIDATES]}) -- stopping rather than inventing a "
-            f"plot. Available curve names: {distinct_names}")
+            f"plot. Available curve identities: {readable_ids}")
     resolved_slots.append(slot4)
 
     curves = {}
-    for key, title, name in resolved_slots:
-        curves[key] = {"title": title, "raw_name": name, "data": load_curve_group_data(curve_df, sch, name)}
+    for key, title, values in resolved_slots:
+        raw_name = ", ".join(f"{c}={v}" for c, v in zip(sch["id_cols"], values) if pd.notna(v))
+        curves[key] = {"title": title, "raw_name": raw_name,
+                       "data": load_curve_group_data(curve_df, sch, values)}
     return curves
 
 
