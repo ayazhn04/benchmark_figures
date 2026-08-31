@@ -694,19 +694,12 @@ def select_slice_index(v: np.ndarray, labeled: np.ndarray, largest_id, plane: st
 # robust column/row resolution, hard failure on ambiguity/missing metric.
 # ============================================================================
 
-METRIC_ID_CANDIDATES = ["metric", "metric_name", "descriptor", "name", "feature", "variable", "row_metric"]
-
 VALUE_COL_ALIASES = {
     "real": ["real", "reference", "real_mean", "reference_mean", "real_value", "gt", "gt_mean",
              "validation", "validation_mean"],
     "diffusion": ["diffusion", "poregen", "diffusion_mean", "poregen_mean", "diffusion_value",
                   "model_diffusion", "poregen_diffusion", "poregen_diffusion_mean"],
     "gan": ["gan", "ipwgan", "gan_mean", "ipwgan_mean", "gan_value", "model_gan"],
-}
-ERROR_COL_ALIASES = {
-    "diffusion": ["diffusion_error", "poregen_error", "diffusion_err", "diffusion_rmse",
-                  "poregen_rmse", "diffusion_abs_error"],
-    "gan": ["gan_error", "ipwgan_error", "gan_err", "gan_rmse", "ipwgan_rmse", "gan_abs_error"],
 }
 
 
@@ -718,82 +711,95 @@ def _load_csv(path: Path) -> pd.DataFrame:
     return df
 
 
-def _resolve_metric_row(df: pd.DataFrame, path: Path, metric_key: str, aliases: list):
-    id_col = pick_col(df, METRIC_ID_CANDIDATES, "metric-identifier column", required=False)
-    if id_col is None:
-        raise RuntimeError(f"[metrics] {path} has no recognizable metric-identifier column "
-                            f"(tried {METRIC_ID_CANDIDATES})")
-    key_norms = [_norm(metric_key)] + [_norm(a) for a in aliases]
-    id_norm = df[id_col].astype(str).map(_norm)
-    matches = df[id_norm.isin(key_norms)]
-    if matches.empty:
-        sub_mask = id_norm.map(lambda v: any(k in v or v in k for k in key_norms if k))
-        matches = df[sub_mask]
-    if matches.empty:
-        raise RuntimeError(f"[metrics] '{metric_key}' not found in {path} (id column '{id_col}'); "
-                            f"tried exact/alias names {key_norms}")
-    if len(matches) > 1:
-        raise RuntimeError(f"[metrics] '{metric_key}' matched {len(matches)} rows in {path} "
-                            f"(ambiguous): {matches[id_col].tolist()}")
-    return matches.iloc[0], id_col
+def resolve_long_group_metric(df: pd.DataFrame, metric_name: str, expected: dict = None,
+                               tol: float = 0.02) -> dict:
+    """group_scalar_summary.csv (and advanced_group_summary.csv) are LONG
+    format: one row per (group, metric) with columns group/metric/.../mean
+    -- never real/diffusion/gan value columns on a single metric row. This
+    resolves exactly one row per group for an EXACT metric name (no
+    substring/alias fuzzy matching, which is how 'largest_component_fraction'
+    previously collided with the skeleton/SNOW/solid variants) and reads the
+    value from the 'mean' column."""
+    required = {"group", "metric", "mean"}
+    missing = required - set(df.columns)
+    if missing:
+        raise RuntimeError(f"[metrics] {GROUP_SCALAR_SUMMARY} missing columns: {missing}")
+
+    sub = df[df["metric"].astype(str) == metric_name].copy()
+    if sub.empty:
+        raise RuntimeError(f"[metrics] metric not found exactly in {GROUP_SCALAR_SUMMARY}: "
+                            f"'{metric_name}'")
+
+    sub["_group"] = sub["group"].map(map_group_alias)
+
+    out = {"raw_name": metric_name, "source": str(GROUP_SCALAR_SUMMARY)}
+    for g in GROUPS:
+        rows = sub[sub["_group"] == g]
+        if len(rows) != 1:
+            raise RuntimeError(
+                f"[metrics] metric '{metric_name}': expected exactly one row for group '{g}', got "
+                f"{len(rows)}. Rows were: {sub[['group', 'metric', 'mean']].to_string(index=False)}"
+            )
+        out[g] = float(rows.iloc[0]["mean"])
+
+    log(f"[metrics] '{metric_name}' resolved from {GROUP_SCALAR_SUMMARY.name}: "
+        f"real={out['real']:.6g} diffusion={out['diffusion']:.6g} gan={out['gan']:.6g}")
+
+    if expected is not None:
+        for g in GROUPS:
+            _check_close(f"panel_b.{metric_name}.{g}", out[g], expected[g], tol)
+
+    return out
 
 
-def resolve_scalar_metric(df: pd.DataFrame, path: Path, metric_key: str, aliases: list) -> dict:
-    row, id_col = _resolve_metric_row(df, path, metric_key, aliases)
-    raw_name = str(row[id_col])
-    real_col = pick_col(df, VALUE_COL_ALIASES["real"], f"{metric_key}.real", required=False)
-    diff_col = pick_col(df, VALUE_COL_ALIASES["diffusion"], f"{metric_key}.diffusion", required=False)
-    gan_col = pick_col(df, VALUE_COL_ALIASES["gan"], f"{metric_key}.gan", required=False)
-    if real_col is None or diff_col is None or gan_col is None:
-        raise RuntimeError(f"[metrics] '{metric_key}' in {path}: could not resolve real/diffusion/gan "
-                            f"value columns; available columns: {list(df.columns)}")
-    real_v = float(pd.to_numeric(row[real_col], errors="coerce"))
-    diff_v = float(pd.to_numeric(row[diff_col], errors="coerce"))
-    gan_v = float(pd.to_numeric(row[gan_col], errors="coerce"))
-
-    diff_err_col = pick_col(df, ERROR_COL_ALIASES["diffusion"], f"{metric_key}.diffusion_err", required=False)
-    gan_err_col = pick_col(df, ERROR_COL_ALIASES["gan"], f"{metric_key}.gan_err", required=False)
-    diff_err = float(pd.to_numeric(row[diff_err_col], errors="coerce")) if diff_err_col else None
-    gan_err = float(pd.to_numeric(row[gan_err_col], errors="coerce")) if gan_err_col else None
-
-    log(f"[metrics] '{metric_key}' resolved from {path.name} (row='{raw_name}'): "
-        f"real={real_v:.6g} diffusion={diff_v:.6g} gan={gan_v:.6g}"
-        + (f"  diffusion_err={diff_err:.6g} gan_err={gan_err:.6g}" if diff_err is not None else ""))
-    return {"raw_name": raw_name, "real": real_v, "diffusion": diff_v, "gan": gan_v,
-            "diffusion_err": diff_err, "gan_err": gan_err, "source": str(path)}
-
-
-def resolve_scalar_with_fallback(metric_key: str, aliases: list, dfs_in_order: list) -> dict:
-    last_exc = None
-    for path, df in dfs_in_order:
-        if df is None:
+def resolve_first_existing_long_group_metric(df: pd.DataFrame, metric_names: list, expected: dict,
+                                              tol: float, label: str) -> dict:
+    """Same exact-row, long-format resolution as resolve_long_group_metric,
+    but tries a short ordered list of exact candidate metric names (e.g. a
+    naming variant across package versions) instead of aliases/substrings --
+    the first exact name that resolves cleanly for all three groups wins."""
+    for metric_name in metric_names:
+        sub = df[df["metric"].astype(str) == metric_name].copy()
+        if sub.empty:
             continue
-        try:
-            return resolve_scalar_metric(df, path, metric_key, aliases)
-        except Exception as exc:
-            last_exc = exc
-            log(f"[metrics] '{metric_key}' not resolved from {path.name} ({exc}); trying next source")
-    raise RuntimeError(f"[metrics] '{metric_key}' could not be resolved unambiguously from any "
-                        f"official source -- stopping without saving. Last error: {last_exc}")
+        sub["_group"] = sub["group"].map(map_group_alias)
+        out = {"raw_name": metric_name, "source": str(ADVANCED_GROUP_SUMMARY)}
+        ok = True
+        for g in GROUPS:
+            rows = sub[sub["_group"] == g]
+            if len(rows) != 1:
+                ok = False
+                break
+            out[g] = float(rows.iloc[0]["mean"])
+        if ok:
+            log(f"[metrics] '{label}' resolved from {ADVANCED_GROUP_SUMMARY.name} as exact metric "
+                f"'{metric_name}': real={out['real']:.6g} diffusion={out['diffusion']:.6g} "
+                f"gan={out['gan']:.6g}")
+            for g in GROUPS:
+                _check_close(f"advanced.{label}.{g}", out[g], expected[g], tol)
+            return out
+
+    raise RuntimeError(f"[metrics] none of the exact metric names were found for '{label}' in "
+                        f"{ADVANCED_GROUP_SUMMARY}: {metric_names}")
 
 
+# The third element is the EXACT metric name in group_scalar_summary.csv's
+# long-format 'metric' column -- no aliases, no substring matching. Broad
+# substring matching on e.g. "largest_component_fraction" previously
+# collided with the skeleton/SNOW/solid-phase variants of that name.
 PANEL_B_METRICS = [
     ("largest_pore_component_fraction", "Largest pore component fraction",
-     ["largest_component_fraction", "largest_connected_pore_component_fraction",
-      "largest_connected_component_fraction", "pore_largest_component_fraction", "lcf", "pore_lcf"]),
+     "largest_component_fraction_pore"),
     ("disconnected_pore_fraction", "Disconnected pore fraction",
-     ["disconnected_fraction", "small_disconnected_pore_fraction", "pore_disconnected_fraction"]),
+     "disconnected_fraction_pore"),
     ("mean_percolating_axes", "Mean percolating axes",
-     ["percolating_axes_mean", "number_of_percolating_axes", "n_percolating_axes", "percolating_axes"]),
+     "n_percolating_axes_pore"),
     ("percolating_pore_fraction_x", "Percolating pore fraction, x",
-     ["x_percolating_pore_fraction", "pore_percolating_component_fraction_x",
-      "percolating_component_fraction_x"]),
+     "percolating_pore_fraction_x"),
     ("percolating_pore_fraction_y", "Percolating pore fraction, y",
-     ["y_percolating_pore_fraction", "pore_percolating_component_fraction_y",
-      "percolating_component_fraction_y"]),
+     "percolating_pore_fraction_y"),
     ("percolating_pore_fraction_z", "Percolating pore fraction, z",
-     ["z_percolating_pore_fraction", "pore_percolating_component_fraction_z",
-      "percolating_component_fraction_z"]),
+     "percolating_pore_fraction_z"),
 ]
 
 PANEL_B_EXPECTED = {
@@ -806,16 +812,17 @@ PANEL_B_EXPECTED = {
 }
 
 
-def load_panel_b_metrics(scalar_dfs: list) -> dict:
+def load_panel_b_metrics() -> dict:
+    """Panel b values come ONLY from group_scalar_summary.csv, which is
+    long-format (group, metric, n, mean, std, median, p10, p90, min, max) --
+    never real/diffusion/gan value columns on a single metric row."""
+    df = _load_csv(GROUP_SCALAR_SUMMARY)
     resolved = {}
-    for key, _label, aliases in PANEL_B_METRICS:
-        r = resolve_scalar_with_fallback(key, aliases, scalar_dfs)
+    for key, _label, metric_name in PANEL_B_METRICS:
         exp = PANEL_B_EXPECTED[key]
         tol = COMPONENT_TOL if key in ("largest_pore_component_fraction", "disconnected_pore_fraction",
                                         "mean_percolating_axes") else METRIC_TOL
-        for g in GROUPS:
-            _check_close(f"panel_b.{key}.{g}", r[g], exp[g], tol)
-        resolved[key] = r
+        resolved[key] = resolve_long_group_metric(df, metric_name, exp, tol)
     return resolved
 
 
@@ -954,23 +961,31 @@ def load_pair_connectedness_rmse() -> dict:
 
 # ---- panel c inset: skeleton/SNOW advanced network metrics ---------------
 
+# The third element is an ORDERED list of EXACT candidate metric names in
+# advanced_group_summary.csv's long-format 'metric' column (naming can vary
+# slightly across package versions) -- no substring/alias fuzzy matching.
 ADVANCED_METRICS = [
     ("skeleton_graph_largest_component_fraction", "Skeleton graph LCF",
-     ["skeleton_lcf", "skeleton_graph_lcf"], EXPECTED_SKELETON_LCF),
+     ["skeleton_largest_component_fraction_pore", "skeleton_graph_largest_component_fraction_pore",
+      "skeleton_graph_largest_component_fraction"], EXPECTED_SKELETON_LCF),
     ("snow_graph_largest_component_fraction", "SNOW graph LCF",
-     ["snow_lcf", "snow_graph_lcf"], EXPECTED_SNOW_LCF),
+     ["snow_graph_largest_component_fraction", "snow_graph_largest_component_fraction_pore",
+      "snow_largest_component_fraction_pore"], EXPECTED_SNOW_LCF),
     ("snow_coordination_number", "SNOW coordination number",
-     ["coordination_number", "snow_coordination"], EXPECTED_SNOW_COORD),
+     ["snow_coordination_number", "snow_coordination_number_mean", "snow_coordination_mean",
+      "snow_mean_coordination_number"], EXPECTED_SNOW_COORD),
 ]
 
 
-def load_advanced_metrics(advanced_dfs: list) -> dict:
+def load_advanced_metrics() -> dict:
+    """Advanced/network metrics come ONLY from advanced_group_summary.csv,
+    which is the same long-format (group, metric, ..., mean) shape as
+    group_scalar_summary.csv."""
+    df = _load_csv(ADVANCED_GROUP_SUMMARY)
     resolved = {}
-    for key, _label, aliases, expected in ADVANCED_METRICS:
-        r = resolve_scalar_with_fallback(key, aliases, advanced_dfs)
-        for g in GROUPS:
-            _check_close(f"advanced.{key}.{g}", r[g], expected[g], ADVANCED_TOL)
-        resolved[key] = r
+    for key, label, candidate_names, expected in ADVANCED_METRICS:
+        resolved[key] = resolve_first_existing_long_group_metric(df, candidate_names, expected,
+                                                                   ADVANCED_TOL, label)
     return resolved
 
 
@@ -1458,28 +1473,16 @@ def main():
     finalize_renders(raw_paths, png_paths)
     log("Panel a crop/zoom used: none")
 
-    # ---- panel b: official scalar metrics -----------------------------------
-    scalar_dfs = []
-    for path in (GROUP_SCALAR_SUMMARY, DESCRIPTOR_ERRORS, ONE_FILE_DESCRIPTOR_ERRORS):
-        try:
-            scalar_dfs.append((path, _load_csv(path)))
-        except FileNotFoundError as exc:
-            log(f"[metrics] optional fallback source unavailable: {exc}")
-            scalar_dfs.append((path, None))
-    panel_b_metrics = load_panel_b_metrics(scalar_dfs)
+    # ---- panel b: official scalar metrics (group_scalar_summary.csv only,
+    # long-format, exact metric-name rows -- see resolve_long_group_metric) --
+    panel_b_metrics = load_panel_b_metrics()
 
     # ---- panel c: curves, rmse, advanced metrics ---------------------------
     curve_data = load_pair_connectedness_curves()
     rmse_data = load_pair_connectedness_rmse()
 
-    advanced_dfs = []
-    for path in (ADVANCED_GROUP_SUMMARY, ADVANCED_DESCRIPTOR_ERRORS, ONE_FILE_ADVANCED_ERRORS):
-        try:
-            advanced_dfs.append((path, _load_csv(path)))
-        except FileNotFoundError as exc:
-            log(f"[metrics] optional fallback source unavailable: {exc}")
-            advanced_dfs.append((path, None))
-    advanced_metrics = load_advanced_metrics(advanced_dfs)
+    # advanced_group_summary.csv only, same long-format exact-row resolution
+    advanced_metrics = load_advanced_metrics()
 
     # ---- canvas -------------------------------------------------------------
     fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=BG)
