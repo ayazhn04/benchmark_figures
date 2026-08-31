@@ -14,6 +14,14 @@ files are used -- no broad path search, no bestckpt MicroGen3D, no
 non-B_late SurVol, no old grayscale/calibrated GAN outputs. Extensive hard
 sanity checks raise and refuse to save rather than silently substituting
 or faking data.
+
+Panel a uses a FIXED camera/extent/cutaway protocol identical across all
+three groups (no content-dependent cropping, no alpha-bounding-box zoom),
+fixed central slices (z=y=x=64), and grayscale phase coloring. Panel b is
+a 2x2 grid of official structural descriptor curves. Panel c is a compact
+two-part mechanistic panel: an interface/contact-hierarchy fingerprint and
+an active-domain continuity/fragmentation plot. No interpretive sentences
+are drawn inside the figure.
 """
 
 from __future__ import annotations
@@ -84,8 +92,8 @@ VALID_LABELS = {0, 1, 2}
 # task instructions (no broad search is ever performed), this guards
 # against an accidental future edit resolving into one of the explicitly
 # forbidden cohorts/folders.
-EXCLUDE_PATH_TOKENS = ("bestckpt", "ganmuller128cube50", "smoke", "preview",
-                       "checkpointcompare", "inferencesmoke", "fixeddecode",
+EXCLUDE_PATH_TOKENS = ("bestckpt", "ganmuller128cube50", "ganmuller128cube50tif", "smoke",
+                       "preview", "checkpointcompare", "inferencesmoke", "fixeddecode",
                        "newhrqc", "inputaudit", "calibrated", "grayscale")
 
 RENDER_PX = 1500
@@ -95,20 +103,23 @@ FIG_W, FIG_H = 17.8, 10.2
 
 CAPTION_TEXT = (
     "Figure 4.5. Qualitative and descriptor-level comparison for the multi-phase "
-    "microstructure task. (a) Representative orthogonal slices and 3D renderings from "
-    "real Muller graphite-silicon anode samples, adapted MicroGen3D outputs, and "
+    "microstructure task. (a) Representative fixed-index orthogonal central slices "
+    "(z = y = x = 64) and 3D cutaway renderings, using the full 128³ field of view "
+    "with an identical camera, cube extent, and octant cutaway across all three groups, "
+    "for real Muller graphite-silicon anode samples, adapted MicroGen3D outputs, and "
     "n-phase SurVol outputs. Labels correspond to pore space, active material "
-    "(graphite + silicon), and carbon-binder domain (CBD). Samples and slices were "
-    "selected deterministically using phase-fraction and CBD-visibility rules, not "
-    "manual visual cherry-picking. (b) Relative errors for descriptors central to "
-    "multi-phase contact validity, including CBD fraction, pairwise interface "
-    "hierarchy, triple-phase-contact proxy, and Muller-specific contact-role "
-    "measures. SurVol was closer for most minority-phase contact descriptors. "
-    "(c) Active-phase topology diagnostic explaining the MicroGen3D active Euler "
-    "outlier. MicroGen3D produced many more small active components than the real "
-    "reference, whereas SurVol remained closer to the real connected-component "
-    "structure. The figure reports raw generated outputs without morphology-based "
-    "post-processing."
+    "(graphite + silicon), and carbon-binder domain (CBD); pore is not rendered as a "
+    "3D surface. Representative samples were selected deterministically from "
+    "phase-fraction statistics, not manual visual cherry-picking. (b) Official "
+    "structural descriptor curves -- active same-phase and pore-active cross two-point "
+    "correlation, an active chord-length distribution, and one further resolved curve "
+    "descriptor -- each showing the real reference (with spread band where available) "
+    "and the two generated ensembles overlaid. (c) Mechanistic descriptors: an "
+    "interface/contact-hierarchy fingerprint (pairwise phase interfaces, the "
+    "triple-phase-contact proxy, and CBD contact-role descriptors) and active-domain "
+    "continuity/fragmentation (active Euler characteristic and active "
+    "connected-component statistics, log scale). The figure reports raw generated "
+    "outputs without morphology-based post-processing."
 )
 
 # ============================================================================
@@ -137,8 +148,10 @@ EXPECTED_TRANSITIONS = {
     "gan":       {"x": 0.0364, "y": 0.0322, "z": 0.0448},
 }
 
-# Panel-b metric keys, in the exact plotted order, mapped to (concise
-# y-label, strict alias list, expected MicroGen3D %, expected SurVol %).
+# Panel-b/c scalar metric keys, mapped to (concise label, strict alias
+# list, expected MicroGen3D relative-error %, expected SurVol relative-error %).
+# These feed BOTH panel c-left (raw real/diffusion/gan values) and the
+# sanity checks; panel b itself now plots official curves, not these errors.
 PANEL_B_METRICS = [
     ("cbd_fraction", "CBD fraction",
      ["frac_cbd", "fraction_cbd", "phase_fraction_2", "volume_fraction_2",
@@ -157,15 +170,20 @@ PANEL_B_METRICS = [
     ("tpb_proxy", "TPB proxy",
      ["tpb_density_2x2x2", "tpb_proxy_density", "triple_phase_contact_proxy_density"], 479.01, 50.78),
     ("active_to_pore", "Active→pore",
-     ["active_surface_exposed_to_pore", "active_contact_pore",
-      "active_surface_contacting_pore", "muller_active_surface_pore"], 12.87, 3.59),
+     ["active_surface_exposed_to_pore_fraction", "active_surface_exposed_to_pore",
+      "active_contact_pore", "active_surface_contacting_pore", "muller_active_surface_pore"],
+     12.87, 3.59),
     ("active_to_cbd", "Active→CBD",
-     ["active_surface_contacting_cbd", "active_contact_cbd", "muller_active_surface_cbd"], 111.60, 31.15),
+     ["active_surface_contacting_cbd_fraction", "active_surface_contacting_cbd",
+      "active_contact_cbd", "muller_active_surface_cbd"], 111.60, 31.15),
     ("cbd_to_pore", "CBD→pore",
-     ["cbd_surface_contacting_pore", "cbd_contact_pore", "muller_cbd_surface_pore"], 71.31, 0.81),
+     ["cbd_contacting_pore_fraction", "cbd_surface_contacting_pore_fraction",
+      "cbd_surface_contacting_pore", "cbd_contact_pore", "muller_cbd_surface_pore"], 71.31, 0.81),
     ("cbd_to_active", "CBD→active",
-     ["cbd_surface_contacting_active", "cbd_surface_contacting_active_material",
-      "cbd_contact_active", "muller_cbd_surface_active"], 552.89, 6.31),
+     ["cbd_contacting_active_fraction", "cbd_contacting_active_material_fraction",
+      "cbd_surface_contacting_active_fraction", "cbd_surface_contacting_active",
+      "cbd_surface_contacting_active_material", "cbd_contact_active",
+      "muller_cbd_surface_active"], 552.89, 6.31),
 ]
 
 ACTIVE_EULER_ALIASES = ["euler_active_abs", "abs_euler_active", "active_euler_abs",
@@ -212,14 +230,17 @@ COLORS = {"real": "#8C93A1", "diffusion": "#F2A93B", "gan": "#772A8E"}
 LABELS = {"real": "Reference", "diffusion": "MicroGen3D", "gan": "SurVol"}
 MARKERS = {"real": "o", "diffusion": "D", "gan": "^"}
 TITLE_COLOR = {"real": TEXT, "diffusion": COLORS["diffusion"], "gan": COLORS["gan"]}
+LINESTYLES = {"real": "-", "diffusion": "-", "gan": (0, (5.5, 2.2))}
+LINEWIDTHS = {"real": 1.85, "diffusion": 1.85, "gan": 1.95}
 
 CARD_LW = 0.8
 CELL_LW = 1.6
 
-# Phase colors for panel a -- these color the material phase inside each
-# slice/render, not the model group (model identity is carried by the
-# column titles and cell borders instead, as in Figures 4.1-4.4).
-PHASE_COLORS = {0: "#2B124C", 1: "#D96B27", 2: "#F6D86B"}
+# Grayscale phase colors for panel a -- these color the material phase
+# inside each slice/render, not the model group (model identity is carried
+# by the column titles and cell borders instead, as in Figures 4.1-4.4).
+# pore = near-black, active = light gray/white, CBD = medium/darker gray.
+PHASE_COLORS = {0: "#0A0A0A", 1: "#F0F0F0", 2: "#707070"}
 PHASE_NAMES = {0: "pore", 1: "active", 2: "CBD"}
 PHASE_CMAP = ListedColormap([PHASE_COLORS[0], PHASE_COLORS[1], PHASE_COLORS[2]])
 
@@ -228,11 +249,10 @@ PHASE_CMAP = ListedColormap([PHASE_COLORS[0], PHASE_COLORS[1], PHASE_COLORS[2]])
 #
 # Panel a (3 groups x {3D, XY, XZ, YZ}) is the same shape as the panel-a
 # image grid in Figures 4.1/4.2/4.4, so the proven card_a geometry is
-# reused directly. Panels b and c are each a single wide/tall plot here
-# (not a 2x2 block or split card), which is a better fit for a 9-row
-# log-scale error comparison and a 5-category topology-ratio plot than
-# subdividing further -- so card_b/card_c host one axes each instead of
-# the multi-subplot layouts used in earlier figures.
+# reused directly. Panel b is now a 2x2 curve grid, the same shape as
+# panel b in Figures 4.1/4.2, so that proven geometry is reused too. Panel
+# c is a full-width card split into two side-by-side subplots, the same
+# shape as panel c in Figure 4.2, reused for the same reason.
 # ============================================================================
 
 card_a = [0.045, 0.365, 0.380, 0.570]
@@ -465,60 +485,37 @@ def choose_representative_generated(group: str, rows: list, real_mean_vec: np.nd
 
 
 # ============================================================================
-# 8. SLICE SELECTION -- central-range search for an all-three-phases,
-# CBD-representative orthogonal slice (never an arbitrary/silent default)
+# 8. SLICE SELECTION -- fixed central slices for all groups, for a fair,
+# content-independent visual comparison (no phase-bounding-box search).
 # ============================================================================
 
-SLICE_RANGE = range(40, 89)  # 40..88 inclusive
-
-
-def _slice_entropy(sl: np.ndarray) -> float:
-    counts = np.array([(sl == k).sum() for k in (0, 1, 2)], dtype=float)
-    p = counts / counts.sum()
-    p = p[p > 0]
-    return float(-(p * np.log(p)).sum())
-
-
-def choose_slice_index(vol: np.ndarray, plane: str, full_cbd_frac: float) -> int:
-    """plane in {'xy','xz','yz'}. Searches SLICE_RANGE for the best index
-    containing all three phase labels; raises if none qualify."""
-    candidates = []
-    for idx in SLICE_RANGE:
-        if plane == "xy":
-            sl = vol[idx, :, :]
-        elif plane == "xz":
-            sl = vol[:, idx, :]
-        elif plane == "yz":
-            sl = vol[:, :, idx]
-        else:
-            raise ValueError(plane)
-        labels = set(np.unique(sl).tolist())
-        if not {0, 1, 2}.issubset(labels):
-            continue
-        cbd_frac = float(np.mean(sl == 2))
-        candidates.append({
-            "idx": idx, "cbd_diff": abs(cbd_frac - full_cbd_frac),
-            "entropy": _slice_entropy(sl), "center_dist": abs(idx - 64),
-        })
-    if not candidates:
-        raise RuntimeError(f"[slice] no index in {SLICE_RANGE.start}-{SLICE_RANGE.stop - 1} for "
-                            f"plane '{plane}' contains all three phase labels -- stopping without "
-                            f"saving (no arbitrary fallback slice is chosen)")
-    candidates.sort(key=lambda c: (c["cbd_diff"], -c["entropy"], c["center_dist"]))
-    best = candidates[0]
-    return best["idx"]
+CENTRAL_SLICE_INDEX = 64  # z = y = x = 64, for a (128,128,128) volume
 
 
 # ============================================================================
 # 9. 3D RENDERING (panel a) -- true marching-cubes isosurfaces for the
 # active-material and CBD phase masks of the raw, unsmoothed representative
-# volume. Pore is not rendered as a surface. No MIP fallback: if PyVista +
+# volume, restricted to a fixed geometric octant-cutaway mask applied
+# IDENTICALLY to all three groups (same convention as Figure 4.2 panel a:
+# a full cube with the same missing 1/8 corner, exposing the interior).
+# Pore is never rendered as a surface. No MIP fallback: if PyVista +
 # scikit-image marching_cubes cannot run, the script fails loudly rather
 # than silently substituting another representation.
 # ============================================================================
 
 
-def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float):
+def _octant_keep_mask_zyx(nz: int, ny: int, nx: int) -> np.ndarray:
+    """True everywhere except the removed corner octant, in the same (z,y,x)
+    index order as the volumes themselves. At this figure's fixed camera
+    direction (1.0, -1.30, 0.90) in (z,y,x)-space, the vertex nearest the
+    viewer is (high-z, low-y, high-x) -- so that corner is removed here,
+    putting the cutaway facing the viewer (same convention as Figure 4.2)."""
+    keep = np.ones((nz, ny, nx), dtype=bool)
+    keep[nz // 2:, :ny // 2, nx // 2:] = False
+    return keep
+
+
+def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float) -> dict:
     import pyvista as pv
     from skimage import measure
 
@@ -529,20 +526,22 @@ def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
 
     nz, ny, nx = vol.shape
     center = np.array([nz / 2.0, ny / 2.0, nx / 2.0])
+    keep = _octant_keep_mask_zyx(nz, ny, nx)
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
 
     surfaces = [
-        (1, PHASE_COLORS[1], 0.55),  # active material -- moderately opaque
-        (2, PHASE_COLORS[2], 0.85),  # CBD -- more opaque, highlighted
+        (1, PHASE_COLORS[1], 0.70),  # active material
+        (2, PHASE_COLORS[2], 0.92),  # CBD -- more opaque, highlighted
     ]
     any_surface = False
     for label, color, opacity in surfaces:
-        mask = (vol == label).astype(np.float32)
+        mask = ((vol == label) & keep).astype(np.float32)
         if mask.min() >= 0.5 or mask.max() <= 0.5:
             log(f"[render:{group}] phase {label} ({PHASE_NAMES[label]}) has a degenerate iso-level "
-                f"(absent or filling the whole volume) -- skipping that surface only")
+                f"within the cutaway mask (absent or filling the whole volume) -- skipping that "
+                f"surface only")
             continue
         verts, faces, _, _ = measure.marching_cubes(mask, level=0.5)
         faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
@@ -555,8 +554,12 @@ def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
 
     if not any_surface:
         raise RuntimeError(f"[render:{group}] neither active-material nor CBD phase produced a "
-                            f"usable isosurface -- refusing to render an empty cell")
+                            f"usable isosurface inside the cutaway mask -- refusing to render an "
+                            f"empty cell")
 
+    # Full [0,nz]x[0,ny]x[0,nx] cube wireframe -- identical extent for every
+    # group regardless of data content, so the rendered scale is fair by
+    # construction rather than by post-hoc cropping.
     pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
                 color=COLORS[group], line_width=2.2, opacity=0.55)
 
@@ -573,10 +576,14 @@ def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
     pl.screenshot(str(out_raw), transparent_background=True)
     pl.close()
 
+    return {"render_extent": [[0, nz], [0, ny], [0, nx]], "parallel_scale": float(parallel_scale),
+            "cutaway_rule": "remove octant z>=nz/2, y<ny/2, x>=nx/2 (nearest the fixed camera)",
+            "camera_direction": direction.tolist()}
 
-def render_group_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float):
+
+def render_group_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float) -> dict:
     try:
-        render_multiphase(vol, group, out_raw, parallel_scale)
+        return render_multiphase(vol, group, out_raw, parallel_scale)
     except Exception as exc:
         raise RuntimeError(
             f"[render:{group}] true 3D multiphase isosurface rendering failed and no fallback is "
@@ -584,45 +591,26 @@ def render_group_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel
         ) from exc
 
 
-def finalize_renders(raw_paths, out_paths, pad_frac=0.06):
-    """Common alpha crop across all groups -> identical scale and centring."""
-    ims = {g: Image.open(p).convert("RGBA") for g, p in raw_paths.items()}
-    boxes = []
-    for im in ims.values():
-        a = np.asarray(im)[:, :, 3]
-        m = a > 5
-        if m.any():
-            ys, xs = np.where(m)
-            boxes.append((xs.min(), ys.min(), xs.max(), ys.max()))
-    if not boxes:
-        boxes = [(0, 0, list(ims.values())[0].size[0] - 1, list(ims.values())[0].size[1] - 1)]
-
-    x0 = min(b[0] for b in boxes)
-    y0 = min(b[1] for b in boxes)
-    x1 = max(b[2] for b in boxes)
-    y1 = max(b[3] for b in boxes)
-
-    pad = int(round(pad_frac * max(x1 - x0, y1 - y0))) + 6
-    side = max(x1 - x0, y1 - y0) + 2 * pad
-    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-
+def finalize_renders(raw_paths: dict, out_paths: dict):
+    """Identical, content-independent resize for every group -- NO alpha
+    bounding-box crop, NO per-group foreground zoom, NO padding based on
+    rendered content. Because the camera, parallel scale, and the full
+    [0,128]^3 wireframe cube are already identical across groups (see
+    render_multiphase), a plain uniform resize is the fair operation: any
+    bounding-box crop would instead risk rescaling groups differently
+    according to how much of the frame their surfaces happen to fill."""
     rs = _resample()
-    for g, im in ims.items():
-        W, H = im.size
-        L = int(round(cx - side / 2.0))
-        T = int(round(cy - side / 2.0))
-        crop = Image.new("RGBA", (side, side), (255, 255, 255, 0))
-        sx0, sy0 = max(L, 0), max(T, 0)
-        sx1, sy1 = min(L + side, W), min(T + side, H)
-        crop.alpha_composite(im.crop((sx0, sy0, sx1, sy1)), (sx0 - L, sy0 - T))
-        crop = crop.resize((CANVAS_PX, CANVAS_PX), rs)
-        canvas = Image.new("RGBA", (CANVAS_PX, CANVAS_PX), (255, 255, 255, 255))
-        canvas.alpha_composite(crop)
+    for g, raw_path in raw_paths.items():
+        im = Image.open(raw_path).convert("RGBA")
+        canvas = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        canvas.alpha_composite(im)
+        canvas = canvas.resize((CANVAS_PX, CANVAS_PX), rs)
         canvas.convert("RGB").save(out_paths[g])
 
 
 # ============================================================================
-# 10. OFFICIAL METRIC LOADING -- exact official B_late CSV/JSON files only.
+# 10. OFFICIAL SCALAR METRIC LOADING -- exact official B_late CSV files
+# only.
 #
 # The scalar/cleaned CSVs are long-format: one row per metric, identified
 # by a metric-name column, with per-group value/error columns. The
@@ -764,9 +752,9 @@ def check_metric_sanity(metric_key: str, resolved: dict, exp_diff: float, exp_ga
 
 
 def check_duplicated_transition_interface_metric(df: pd.DataFrame, path: Path):
-    """Section 8G: if 'mean transition rate' and 'total interface density'
-    both exist and are numerically identical (same voxel-neighborhood
-    definition), print the required note and never plot both."""
+    """If 'mean transition rate' and 'total interface density' both exist
+    and are numerically identical (same voxel-neighborhood definition),
+    print the required note and never plot both."""
     id_col = pick_col(df, METRIC_ID_CANDIDATES, "metric-identifier column", required=False)
     if id_col is None:
         return
@@ -786,7 +774,7 @@ def check_duplicated_transition_interface_metric(df: pd.DataFrame, path: Path):
             "metric.")
 
 
-def load_panel_b_metrics(scalar_df, cleaned_df, main_paper_df):
+def load_panel_metrics(scalar_df, cleaned_df, main_paper_df):
     check_duplicated_transition_interface_metric(scalar_df, SCALAR_COMPARISON)
     sources = [(SCALAR_COMPARISON, scalar_df), (CLEANED_SCIENTIFIC_MASTER, cleaned_df),
                (MAIN_PAPER_CANDIDATES, main_paper_df)]
@@ -804,23 +792,57 @@ def load_active_euler(scalar_df, cleaned_df, main_paper_df):
     return resolve_metric_with_fallback("active_euler_abs", ACTIVE_EULER_ALIASES, sources)
 
 
-# ---- active-component diagnostic (JSON + CSV cross-checks) ----------------
+# ============================================================================
+# 11. ACTIVE-COMPONENT DIAGNOSTIC -- the per-sample CSV is the clean,
+# unambiguous source of truth for group means (the summary CSV can carry
+# awkward pandas multi-index headers). The JSON report and the summary CSV
+# are used only as best-effort cross-checks: a source that fails to load
+# is skipped with a note, but a source that DOES load and disagrees beyond
+# tolerance still stops the run.
+# ============================================================================
 
 COMPONENT_FIELD_ALIASES = {
-    "components": ["active_components_per_sample", "mean_active_components", "n_components",
-                   "component_count", "num_components", "active_component_count"],
-    "singleton": ["singleton_active_components", "mean_singleton_components", "n_singleton",
-                  "singleton_count", "num_singleton"],
-    "size_2_10": ["active_components_size_2_10", "mean_components_2_10", "n_components_2_10",
-                  "components_2_10", "size_2_10_count"],
-    "small_frac": ["small_components_active_voxel_fraction", "small_component_active_voxel_fraction",
+    "components": ["n_components_active", "active_components_per_sample", "mean_active_components",
+                   "n_components", "component_count", "num_components", "active_component_count"],
+    "singleton": ["components_size_1", "singleton_active_components", "mean_singleton_components",
+                  "n_singleton", "singleton_count", "num_singleton"],
+    "size_2_10": ["components_size_2_10", "active_components_size_2_10", "mean_components_2_10",
+                  "n_components_2_10", "components_2_10", "size_2_10_count"],
+    "small_frac": ["small_components_le10_fraction_of_active_voxels",
+                   "small_components_active_voxel_fraction", "small_component_active_voxel_fraction",
                    "tiny_component_voxel_fraction", "small_frac", "small_components_voxel_fraction"],
 }
 GROUP_KEY_ALIASES = {
-    "real": ["real", "reference", "ref", "gt"],
+    "real": ["real", "reference", "ref", "gt", "real_test"],
     "diffusion": ["diffusion", "microgen3d"],
-    "gan": ["gan", "survol"],
+    "gan": ["gan", "survol", "survol_b_late"],
 }
+
+
+def load_active_component_means_from_by_sample() -> dict:
+    if not ACTIVE_COMPONENT_BY_SAMPLE.exists():
+        raise FileNotFoundError(f"[components] missing official file: {ACTIVE_COMPONENT_BY_SAMPLE}")
+    df = pd.read_csv(ACTIVE_COMPONENT_BY_SAMPLE)
+    log(f"[components] loaded {ACTIVE_COMPONENT_BY_SAMPLE}: {df.shape[0]} rows, "
+        f"columns: {list(df.columns)}")
+    gcol = pick_col(df, ["group", "set", "model", "category"], "components-by-sample.group")
+    df = df.copy()
+    df["_group"] = df[gcol].astype(str).str.strip().str.lower()
+
+    out = {}
+    for g in GROUPS:
+        candidates = {_norm(a) for a in GROUP_KEY_ALIASES[g]}
+        sub = df[df["_group"].map(_norm).isin(candidates)]
+        if sub.empty:
+            raise RuntimeError(f"[components] no by-sample rows for group '{g}' in "
+                                f"{ACTIVE_COMPONENT_BY_SAMPLE}")
+        rec = {}
+        for field, aliases in COMPONENT_FIELD_ALIASES.items():
+            col = pick_col(df, aliases, f"components-by-sample.{field}")
+            rec[field] = float(pd.to_numeric(sub[col], errors="coerce").mean())
+        out[g] = rec
+        log(f"[components:by_sample] group '{g}' (n={len(sub)}): {rec}")
+    return out
 
 
 def _deep_find_group_block(node, group: str, _depth=0):
@@ -909,46 +931,59 @@ def load_active_component_summary_csv() -> dict:
     return out
 
 
-def cross_check_component_by_sample(json_data: dict, summary_data: dict):
-    if not ACTIVE_COMPONENT_BY_SAMPLE.exists():
-        raise FileNotFoundError(f"[components] missing official file: {ACTIVE_COMPONENT_BY_SAMPLE}")
-    df = pd.read_csv(ACTIVE_COMPONENT_BY_SAMPLE)
-    log(f"[components] loaded {ACTIVE_COMPONENT_BY_SAMPLE}: {df.shape[0]} rows, "
-        f"columns: {list(df.columns)}")
-    gcol = pick_col(df, ["group", "set", "model", "category"], "components-by-sample.group")
-    df = df.copy()
-    df["_group"] = df[gcol].astype(str).str.strip().str.lower()
+def cross_check_component_sources_optional(by_sample_means: dict) -> list:
+    """Best-effort cross-check of by-sample means against the JSON report
+    and the summary CSV. Either source is skipped (with a logged note,
+    surfaced later as a fallback note) if it cannot be loaded/parsed at
+    all; but if a source DOES load, a genuine disagreement beyond
+    tolerance still stops the run rather than being silently ignored."""
+    notes = []
 
-    for g in GROUPS:
-        candidates = {_norm(a) for a in GROUP_KEY_ALIASES[g]}
-        sub = df[df["_group"].map(_norm).isin(candidates)]
-        if sub.empty:
-            raise RuntimeError(f"[components] no by-sample rows for group '{g}' in "
-                                f"{ACTIVE_COMPONENT_BY_SAMPLE}")
-        for field, aliases in COMPONENT_FIELD_ALIASES.items():
-            col = pick_col(df, aliases, f"components-by-sample.{field}", required=False)
-            if col is None:
-                continue
-            direct_mean = float(pd.to_numeric(sub[col], errors="coerce").mean())
-            for src_name, src in (("json", json_data), ("summary_csv", summary_data)):
-                ref_val = src[g][field]
-                tol = max(COMPONENT_REL_TOL * abs(ref_val), COMPONENT_ABS_FLOOR)
-                if abs(direct_mean - ref_val) > tol:
-                    raise RuntimeError(
-                        f"[components] group '{g}' field '{field}': by-sample recomputed mean "
-                        f"{direct_mean:.6g} disagrees with {src_name} value {ref_val:.6g} "
-                        f"(tol {tol:.6g}) -- diagnostic sources are inconsistent, stopping")
-    log("[sanity:components] active-component JSON, summary CSV, and per-sample CSV agree "
-        "within tolerance for all groups/fields")
+    try:
+        json_means = load_active_component_json()
+    except Exception as exc:
+        note = f"active-component JSON cross-check skipped ({exc})"
+        log(f"[components] {note}")
+        notes.append(note)
+        json_means = None
+    if json_means is not None:
+        for g in GROUPS:
+            for field in COMPONENT_FIELD_ALIASES:
+                a, b = by_sample_means[g][field], json_means[g][field]
+                tol = max(COMPONENT_REL_TOL * abs(b), COMPONENT_ABS_FLOOR if field != "small_frac" else 1e-4)
+                if abs(a - b) > tol:
+                    raise RuntimeError(f"[components] group '{g}' field '{field}': by-sample mean "
+                                        f"{a:.6g} disagrees with JSON report value {b:.6g} "
+                                        f"(tol {tol:.6g}) -- diagnostic sources are inconsistent, stopping")
+        log("[sanity:components] by-sample means agree with the JSON report within tolerance")
+
+    try:
+        summary_means = load_active_component_summary_csv()
+    except Exception as exc:
+        note = f"active-component summary CSV cross-check skipped ({exc})"
+        log(f"[components] {note}")
+        notes.append(note)
+        summary_means = None
+    if summary_means is not None:
+        for g in GROUPS:
+            for field in COMPONENT_FIELD_ALIASES:
+                a, b = by_sample_means[g][field], summary_means[g][field]
+                tol = max(COMPONENT_REL_TOL * abs(b), COMPONENT_ABS_FLOOR if field != "small_frac" else 1e-4)
+                if abs(a - b) > tol:
+                    raise RuntimeError(f"[components] group '{g}' field '{field}': by-sample mean "
+                                        f"{a:.6g} disagrees with summary CSV value {b:.6g} "
+                                        f"(tol {tol:.6g}) -- diagnostic sources are inconsistent, stopping")
+        log("[sanity:components] by-sample means agree with the summary CSV within tolerance")
+
+    return notes
 
 
-def check_component_sanity(summary_data: dict):
+def check_component_sanity(by_sample_means: dict):
     for g in GROUPS:
         exp = EXPECTED_COMPONENTS[g]
         for field in ("components", "singleton", "size_2_10", "small_frac"):
-            got = summary_data[g][field]
-            e = exp[{"components": "components", "singleton": "singleton",
-                     "size_2_10": "size_2_10", "small_frac": "small_frac"}[field]]
+            got = by_sample_means[g][field]
+            e = exp[field]
             tol = max(COMPONENT_REL_TOL * abs(e), COMPONENT_ABS_FLOOR if field != "small_frac" else 1e-4)
             if abs(got - e) > tol:
                 raise RuntimeError(f"[sanity:components] group '{g}' field '{field}': got {got:.6g} "
@@ -957,7 +992,144 @@ def check_component_sanity(summary_data: dict):
 
 
 # ============================================================================
-# 11. PANEL A -- representative multiphase morphology
+# 12. OFFICIAL CURVE LOADING (panel b) -- resolves four structural
+# descriptor curves from the official long-format curve-profiles CSV. No
+# fake curves, no interpolation across mismatched grids: either the four
+# curves resolve unambiguously with matching per-group coordinate grids,
+# or the script prints the available curve names and stops.
+# ============================================================================
+
+CURVE_SLOT_1 = ("active_same_tpcf", "Active same-phase TPCF",
+                ["tpcf_active_active", "tpcf_same_active", "active_same_phase_tpcf",
+                 "active_radial_tpcf", "tpcf_1_1", "same_phase_tpcf_active", "radial_tpcf_active"])
+CURVE_SLOT_2 = ("pore_active_cross_tpcf", "Pore–active cross TPCF",
+                ["tpcf_pore_active", "cross_tpcf_pore_active", "tpcf_0_1",
+                 "pore_active_cross_tpcf", "cross_phase_tpcf_pore_active"])
+CURVE_SLOT_3 = ("active_chord", "Active chord-length distribution",
+                ["chord_length_active", "active_chord_length", "chord_hist_active",
+                 "active_chord_histogram", "chord_active", "chord_length_hist_active"])
+CURVE_SLOT_4_CANDIDATES = [
+    ("cbd_same_tpcf", "CBD same-phase TPCF",
+     ["tpcf_cbd_cbd", "cbd_same_phase_tpcf", "tpcf_2_2", "radial_tpcf_cbd"]),
+    ("cbd_chord", "CBD chord-length distribution",
+     ["chord_length_cbd", "cbd_chord_length", "chord_cbd", "chord_hist_cbd"]),
+    ("local_active_heterogeneity", "Local active-fraction heterogeneity",
+     ["local_active_fraction_heterogeneity", "local_heterogeneity_active", "local_active_heterogeneity"]),
+    ("active_psd", "Radial PSD (active)",
+     ["psd_active", "radial_psd_active", "psd_radial_active"]),
+]
+
+
+def curve_schema(df: pd.DataFrame) -> dict:
+    return {
+        "curve": pick_col(df, ["curve", "curve_name", "metric", "metric_name", "descriptor", "name"],
+                          "curve-identifier column"),
+        "group": pick_col(df, ["group", "set", "model", "category", "class"], "curve group column"),
+        "x": pick_col(df, ["x", "r", "radius_vox", "radius", "lag", "bin", "bin_center",
+                           "coord", "chord_length"], "curve x column"),
+        "mean": pick_col(df, ["mean", "y_mean", "value_mean", "y", "value", "mean_value"],
+                         "curve mean column"),
+        "std": pick_col(df, ["std", "y_std", "value_std", "sd", "stdev", "std_value"],
+                        "curve std column", required=False),
+    }
+
+
+def _map_curve_group(v) -> str | None:
+    vn = _norm(v)
+    for g in GROUPS:
+        if vn in {_norm(a) for a in GROUP_KEY_ALIASES[g]}:
+            return g
+    return None
+
+
+def resolve_curve_name(df: pd.DataFrame, sch: dict, aliases: list):
+    distinct = df[sch["curve"]].astype(str).unique()
+    distinct_norm = {}
+    for d in distinct:
+        distinct_norm.setdefault(_norm(d), d)
+
+    key_norms = [_norm(a) for a in aliases]
+    for k in key_norms:
+        if k in distinct_norm:
+            return distinct_norm[k]
+
+    sub_matches = sorted({raw for dn, raw in distinct_norm.items()
+                          if any(k and (k in dn or dn in k) for k in key_norms)})
+    if len(sub_matches) == 1:
+        return sub_matches[0]
+    if len(sub_matches) > 1:
+        raise RuntimeError(f"[curve] aliases {aliases} matched {len(sub_matches)} distinct curve "
+                            f"names ambiguously: {sub_matches}")
+    return None
+
+
+def load_curve_group_data(df: pd.DataFrame, sch: dict, curve_name: str) -> dict:
+    sub = df[df[sch["curve"]].astype(str) == curve_name].copy()
+    sub["_group"] = sub[sch["group"]].map(_map_curve_group)
+
+    out = {}
+    for g in GROUPS:
+        s = sub[sub["_group"] == g].copy()
+        if s.empty:
+            raise RuntimeError(f"[curve] '{curve_name}': group '{g}' has no rows")
+        s = s.sort_values(sch["x"])
+        x = pd.to_numeric(s[sch["x"]], errors="coerce").to_numpy(float)
+        y = pd.to_numeric(s[sch["mean"]], errors="coerce").to_numpy(float)
+        std = None
+        if sch["std"] is not None:
+            std = pd.to_numeric(s[sch["std"]], errors="coerce").to_numpy(float)
+        if not np.all(np.isfinite(x) & np.isfinite(y)):
+            raise RuntimeError(f"[curve] '{curve_name}' group '{g}': non-finite x/y values")
+        out[g] = {"x": x, "y": y, "std": std}
+
+    ref_x = out["real"]["x"]
+    for g in GROUPS:
+        if out[g]["x"].shape != ref_x.shape or not np.allclose(out[g]["x"], ref_x):
+            raise RuntimeError(
+                f"[curve] '{curve_name}': coordinate grid for group '{g}' differs from 'real' -- "
+                f"refusing to interpolate, stopping without saving")
+    return out
+
+
+def resolve_panel_b_curves(curve_df: pd.DataFrame):
+    sch = curve_schema(curve_df)
+    distinct_names = sorted(curve_df[sch["curve"]].astype(str).unique())
+    log(f"[curves] {len(distinct_names)} distinct curve names available in {CURVE_PROFILES.name}: "
+        f"{distinct_names}")
+
+    resolved_slots = []
+    for key, title, aliases in (CURVE_SLOT_1, CURVE_SLOT_2, CURVE_SLOT_3):
+        name = resolve_curve_name(curve_df, sch, aliases)
+        if name is None:
+            raise RuntimeError(
+                f"[curves] could not resolve required curve slot '{key}' ({title}) from any of "
+                f"{aliases} against the available curve names above -- stopping rather than "
+                f"inventing a plot. Available curve names: {distinct_names}")
+        resolved_slots.append((key, title, name))
+        log(f"[curves] slot '{key}' ({title}) resolved to curve name '{name}'")
+
+    slot4 = None
+    for key, title, aliases in CURVE_SLOT_4_CANDIDATES:
+        name = resolve_curve_name(curve_df, sch, aliases)
+        if name is not None:
+            slot4 = (key, title, name)
+            log(f"[curves] slot 'slot4' resolved to '{key}' ({title}) -> curve name '{name}'")
+            break
+    if slot4 is None:
+        raise RuntimeError(
+            f"[curves] none of the slot-4 candidates resolved "
+            f"({[c[0] for c in CURVE_SLOT_4_CANDIDATES]}) -- stopping rather than inventing a "
+            f"plot. Available curve names: {distinct_names}")
+    resolved_slots.append(slot4)
+
+    curves = {}
+    for key, title, name in resolved_slots:
+        curves[key] = {"title": title, "raw_name": name, "data": load_curve_group_data(curve_df, sch, name)}
+    return curves
+
+
+# ============================================================================
+# 13. PANEL A -- representative multiphase morphology (fair, fixed protocol)
 # ============================================================================
 
 ROW_NAMES = ["3D volume", "X–Y slice", "X–Z slice", "Y–Z slice"]
@@ -1007,14 +1179,17 @@ def build_panel_a(fig, card, rep, png_paths):
                bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.5))
 
         v = r["vol"]
-        zi, yi, xi = r["z_idx"], r["y_idx"], r["x_idx"]
-        # XY: v[zi,:,:] -> horizontal=X, vertical=Y. XZ: v[:,yi,:] -> horizontal=X,
-        # vertical=Z. YZ: v[:,:,xi] -> horizontal=Y, vertical=Z. origin="lower"
-        # makes each vertical axis increase upward -- no transpose needed.
-        slices = [v[zi, :, :], v[:, yi, :], v[:, :, xi]]
+        i = CENTRAL_SLICE_INDEX
+        # XY: v[i,:,:] -> horizontal=X, vertical=Y. XZ: v[:,i,:] -> horizontal=X,
+        # vertical=Z. YZ: v[:,:,i] -> horizontal=Y, vertical=Z. origin="lower"
+        # makes each vertical axis increase upward -- no transpose needed. Fixed
+        # index i=64 for every group -- full (128,128) slice extent, equal
+        # aspect, no phase-bounding-box crop/zoom.
+        slices = [v[i, :, :], v[:, i, :], v[:, :, i]]
         for ri, sl in enumerate(slices):
             a = fig.add_axes([x, row_y(ri + 1), cell_w, cell_h])
-            a.imshow(sl, cmap=PHASE_CMAP, vmin=0, vmax=2, origin="lower", interpolation="nearest")
+            a.imshow(sl, cmap=PHASE_CMAP, vmin=0, vmax=2, origin="lower",
+                     interpolation="nearest", aspect="equal", extent=(0, 128, 0, 128))
             image_cell(a, COLORS[g])
             if c == 0:
                 for txt, (tx, ty), ha, va in DIRECTION_LABELS[ROW_NAMES[ri + 1]]:
@@ -1037,146 +1212,139 @@ def build_panel_a(fig, card, rep, png_paths):
 
 
 # ============================================================================
-# 12. PANEL B -- minority-phase / contact-fidelity relative error
+# 14. PANEL B -- official structural descriptor curves (2x2 grid)
 # ============================================================================
 
-PANEL_B_XLIM = (0.5, 700.0)
-PANEL_B_GUIDES = (10.0, 100.0)
+
+def plot_descriptor_curve(ax, curve_entry, show_legend=False):
+    style_axis(ax)
+    ax.set_title(curve_entry["title"], pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_xlabel("Coordinate (vox)", color=SUBTEXT)
+    ax.set_ylabel("Value", color=SUBTEXT)
+
+    data = curve_entry["data"]
+    for g in GROUPS:
+        d = data[g]
+        x, y, std = d["x"], d["y"], d["std"]
+        if g == "real" and std is not None and np.any(np.isfinite(std)) and np.any(std > 0):
+            ax.fill_between(x, y - std, y + std, color=COLORS[g], alpha=0.20, linewidth=0, zorder=1)
+        ax.plot(x, y, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
+                solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
+
+    ax.margins(x=0.02, y=0.06)
+
+    if show_legend:
+        leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
+                        framealpha=0.94, handlelength=2.3, borderpad=0.45, labelspacing=0.34)
+        leg.get_frame().set_linewidth(0.6)
+        leg.set_zorder(8)
 
 
-def plot_contact_errors(ax, resolved):
-    style_axis(ax, grid=False)
-    ax.set_xscale("log")
-    ax.grid(True, axis="x", which="major", color=GRID, linewidth=0.55, alpha=0.9)
-    ax.set_axisbelow(True)
+def build_panel_b(fig, card, curves):
+    bx_, by_, bw_, bh_ = card
+    b_pl, b_pr, b_pt, b_pb = 0.045, 0.018, 0.040, 0.046
+    b_gx, b_gy = 0.058, 0.076
 
-    n = len(PANEL_B_METRICS)
-    y_centers = np.arange(n - 1, -1, -1)  # first metric drawn at the top
-    row_offset = 0.19
+    plot_w = (bw_ - b_pl - b_pr - b_gx) / 2.0
+    plot_h = (bh_ - b_pt - b_pb - b_gy) / 2.0
 
-    for gv in PANEL_B_GUIDES:
-        ax.axvline(gv, color=SUBTEXT, linestyle=(0, (1.4, 1.8)), linewidth=0.8, alpha=0.55, zorder=1)
+    order = ["active_same_tpcf", "pore_active_cross_tpcf", "active_chord", "slot4"]
+    keys = list(curves.keys())
+    # keys are inserted in slot order by resolve_panel_b_curves: [slot1, slot2, slot3, slot4-actual]
+    for i, key in enumerate(keys):
+        r, c = divmod(i, 2)
+        x = bx_ + b_pl + c * (plot_w + b_gx)
+        y = by_ + bh_ - b_pt - (r + 1) * plot_h - r * b_gy
+        ax = fig.add_axes([x, y, plot_w, plot_h])
+        plot_descriptor_curve(ax, curves[key], show_legend=(i == 1))
 
-    x0 = PANEL_B_XLIM[0]
-    for (key, label, _aliases, _ed, _eg), yc in zip(PANEL_B_METRICS, y_centers):
-        r = resolved[key]
-        for g, dy in (("diffusion", +row_offset), ("gan", -row_offset)):
-            val = max(r[f"{g}_err"], x0 * 1.001)
-            y = yc + dy
-            ax.hlines(y, x0, val, color=COLORS[g], linewidth=1.4, alpha=0.85, zorder=3)
-            ax.scatter([val], [y], s=42, marker=MARKERS[g], color=COLORS[g],
-                       edgecolors="black", linewidths=0.7, zorder=4)
 
-    ax.set_yticks(y_centers)
-    ax.set_yticklabels([lab for _k, lab, *_ in PANEL_B_METRICS], fontsize=7.4)
-    ax.set_ylim(-0.62, n - 1 + 0.62)
-    ax.set_xlim(*PANEL_B_XLIM)
-    ax.set_xlabel("Relative error vs. Reference (%, log scale) ↓", color=SUBTEXT)
+# ============================================================================
+# 15. PANEL C -- mechanistic descriptors: interface/contact-hierarchy
+# fingerprint (c-left) and active-domain continuity/fragmentation (c-right)
+# ============================================================================
 
-    handles = [plt.Line2D([0], [0], marker=MARKERS[g], color=COLORS[g], linestyle="none",
-                          markeredgecolor="black", markeredgewidth=0.7, markersize=6.5, label=LABELS[g])
-               for g in ("diffusion", "gan")]
-    # Upper-left: every row's smallest values (mostly SurVol, x<10) leave
-    # that corner clear, whereas MicroGen3D routinely reaches the right
-    # edge (up to ~550%), which would collide with a right-side legend.
-    leg = ax.legend(handles=handles, loc="upper left", frameon=True, facecolor="white",
-                     edgecolor=SPINE, framealpha=0.94, handlelength=1.4, borderpad=0.4,
-                     labelspacing=0.3, fontsize=6.8)
+FINGERPRINT_ORDER = ["interface_pore_active", "interface_pore_cbd", "interface_active_cbd",
+                     "tpb_proxy", "cbd_to_pore", "cbd_to_active"]
+FINGERPRINT_LABELS = ["Pore–active", "Pore–CBD", "Active–CBD", "TPB proxy", "CBD→pore", "CBD→active"]
+
+FRAGMENTATION_ORDER = ["euler", "components", "singleton", "size_2_10", "small_frac"]
+FRAGMENTATION_LABELS = ["Active Euler\n|χ|", "Active\ncomponents", "Singleton\ncomponents",
+                        "Components\n2–10 vox", "Tiny-component\nvoxel fraction"]
+
+
+def plot_interface_fingerprint(ax, panel_metrics):
+    style_axis(ax)
+    ax.set_title("Interface / contact-hierarchy fingerprint", pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_ylabel("Density / proxy value", color=SUBTEXT)
+
+    xs = np.arange(len(FINGERPRINT_ORDER))
+    for g in GROUPS:
+        vals = [panel_metrics[key][g] for key in FINGERPRINT_ORDER]
+        ax.plot(xs, vals, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
+                marker=MARKERS[g], markersize=5.5, markerfacecolor=COLORS[g],
+                markeredgecolor="black", markeredgewidth=0.6,
+                label=LABELS[g], zorder=3 if g == "real" else 4)
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(FINGERPRINT_LABELS, fontsize=7.2)
+    ax.set_xlim(-0.4, len(FINGERPRINT_ORDER) - 0.6)
+    ax.margins(y=0.16)
+
+    leg = ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
+                    framealpha=0.94, handlelength=2.0, borderpad=0.4, labelspacing=0.3, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
 
 
-def build_panel_b(fig, card, resolved):
-    bx_, by_, bw_, bh_ = card
-    header_y = by_ + bh_ - 0.020
-    # Extra bottom padding (was 0.062) so the "SurVol is closer..." note has
-    # clear room below the x-axis label instead of overlapping it.
-    pl, pr, pb = 0.078, 0.028, 0.095
-    ax_x = bx_ + pl
-    ax_w = bw_ - pl - pr
-    ax_bottom = by_ + pb
-    ax_top = header_y - 0.040
-    ax_h = ax_top - ax_bottom
-
-    fig.text(bx_ + 0.018, header_y, "Minority-phase / contact-fidelity error", ha="left", va="top",
-             fontsize=9.8, fontweight="bold", color=TEXT)
-
-    ax = fig.add_axes([ax_x, ax_bottom, ax_w, ax_h])
-    plot_contact_errors(ax, resolved)
-
-    fig.text(ax_x + ax_w / 2.0, ax_bottom - 0.052,
-             "SurVol is closer for CBD contact-role and phase-pair interfaces.",
-             ha="center", va="top", fontsize=6.5, color=SUBTEXT)
-
-
-# ============================================================================
-# 13. PANEL C -- active-phase topology mechanism (ratio to Reference)
-# ============================================================================
-
-TOPOLOGY_CATEGORIES = [
-    ("euler", "Active Euler |χ|"),
-    ("components", "Active\ncomponents"),
-    ("singleton", "Singleton\ncomponents"),
-    ("size_2_10", "Components\n2–10 vox"),
-    ("small_frac", "Tiny-component\nvoxel fraction"),
-]
-TOPOLOGY_OFFSET = {"real": -0.14, "diffusion": 0.0, "gan": 0.14}
-
-
-def build_panel_c(fig, card, topo_values):
-    cx_, cy_, cw_, ch_ = card
-    header_title_y = cy_ + ch_ - 0.020
-    AXES_SHIFT_UP = 0.016
-    plot_top = header_title_y - 0.058 + AXES_SHIFT_UP
-    # Extra bottom padding (was 0.044+shift) so the two-line X/Y/Z category
-    # tick labels (e.g. "Active\ncomponents") and the "MicroGen3D active-Euler
-    # outlier..." note below them have clear, non-overlapping room.
-    c_pl, c_pr, c_pb = 0.075, 0.030, 0.078 + AXES_SHIFT_UP
-    plot_bottom = cy_ + c_pb
-    plot_h_c = plot_top - plot_bottom
-    ax_x = cx_ + c_pl
-    ax_w = cw_ - c_pl - c_pr
-
-    fig.text(cx_ + 0.014, header_title_y, "Active-phase topology mechanism", ha="left", va="top",
-             fontsize=9.8, fontweight="bold", color=TEXT)
-
-    handles = [plt.Line2D([0], [0], marker=MARKERS[g], color=COLORS[g], linestyle="none",
-                          markeredgecolor="black", markeredgewidth=0.7, markersize=6.5, label=LABELS[g])
-               for g in GROUPS]
-    fig.legend(handles=handles, loc="upper right",
-              bbox_to_anchor=(cx_ + cw_ - 0.010, header_title_y + 0.006),
-              bbox_transform=fig.transFigure, ncol=3, frameon=True,
-              facecolor="white", edgecolor=SPINE, framealpha=0.94,
-              borderpad=0.45, labelspacing=0.3, columnspacing=1.1,
-              handlelength=1.2, handletextpad=0.5, fontsize=7.4).get_frame().set_linewidth(0.6)
-
-    ax = fig.add_axes([ax_x, plot_bottom, ax_w, plot_h_c])
-    plot_topology(ax, topo_values)
-
-    fig.text(ax_x + ax_w / 2.0, plot_bottom - 0.050,
-             "MicroGen3D active-Euler outlier is driven by many tiny active fragments.",
-             ha="center", va="top", fontsize=6.5, color=SUBTEXT)
-
-
-def plot_topology(ax, topo_values):
+def plot_active_fragmentation(ax, euler_resolved, component_means):
     style_axis(ax)
+    ax.set_title("Active-domain continuity / fragmentation", pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_ylabel("Value (log scale)", color=SUBTEXT)
     ax.set_yscale("log")
-    ax.set_ylabel("Ratio to Reference", color=SUBTEXT)
-    ax.axhline(1.0, color=SUBTEXT, linestyle=(0, (1.4, 1.8)), linewidth=0.9, alpha=0.6, zorder=1)
 
-    xs = np.arange(len(TOPOLOGY_CATEGORIES))
+    values = {
+        "euler": {g: abs(euler_resolved[g]) for g in GROUPS},
+        "components": {g: component_means[g]["components"] for g in GROUPS},
+        "singleton": {g: component_means[g]["singleton"] for g in GROUPS},
+        "size_2_10": {g: component_means[g]["size_2_10"] for g in GROUPS},
+        "small_frac": {g: component_means[g]["small_frac"] for g in GROUPS},
+    }
+
+    xs = np.arange(len(FRAGMENTATION_ORDER))
+    offset = {"real": -0.16, "diffusion": 0.0, "gan": 0.16}
     for g in GROUPS:
-        vals = np.array([topo_values[key][g] for key, _lab in TOPOLOGY_CATEGORIES])
-        xpos = xs + TOPOLOGY_OFFSET[g]
-        ax.scatter(xpos, vals, s=72, marker=MARKERS[g], color=COLORS[g],
+        vals = np.array([values[key][g] for key in FRAGMENTATION_ORDER])
+        ax.scatter(xs + offset[g], vals, s=70, marker=MARKERS[g], color=COLORS[g],
                    edgecolors="black", linewidths=0.9, zorder=5, label=LABELS[g])
 
     ax.set_xticks(xs)
-    ax.set_xticklabels([lab for _k, lab in TOPOLOGY_CATEGORIES], fontsize=7.2)
-    ax.set_xlim(-0.5, len(TOPOLOGY_CATEGORIES) - 0.5)
+    ax.set_xticklabels(FRAGMENTATION_LABELS, fontsize=7.0)
+    ax.set_xlim(-0.5, len(FRAGMENTATION_ORDER) - 0.5)
+
+
+def build_panel_c(fig, card, panel_metrics, euler_resolved, component_means):
+    cx_, cy_, cw_, ch_ = card
+    header_title_y = cy_ + ch_ - 0.020
+    plot_top = header_title_y - 0.030
+    c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.046, 0.055
+    plot_bottom = cy_ + c_pb
+    plot_h_c = plot_top - plot_bottom
+    plot_w_c = (cw_ - c_pl - c_pr - c_gx) / 2.0
+    left_x = cx_ + c_pl
+    right_x = left_x + plot_w_c + c_gx
+
+    fig.text(cx_ + 0.014, header_title_y, "Interface hierarchy and active-domain continuity",
+             ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
+
+    ax_left = fig.add_axes([left_x, plot_bottom, plot_w_c, plot_h_c])
+    ax_right = fig.add_axes([right_x, plot_bottom, plot_w_c, plot_h_c])
+
+    plot_interface_fingerprint(ax_left, panel_metrics)
+    plot_active_fragmentation(ax_right, euler_resolved, component_means)
 
 
 # ============================================================================
-# 14. BUILD
+# 16. BUILD
 # ============================================================================
 
 def main():
@@ -1189,15 +1357,15 @@ def main():
     log(f"[paths] DIFFUSION_DIR         = {DIFFUSION_DIR}")
     log(f"[paths] GAN_DIR               = {GAN_DIR}")
     log(f"[paths] SCALAR_COMPARISON     = {SCALAR_COMPARISON}")
-    log(f"[paths] CURVE_COMPARISON      = {CURVE_COMPARISON} (not used by this figure's panels; logged for provenance)")
-    log(f"[paths] CURVE_PROFILES        = {CURVE_PROFILES} (not used by this figure's panels; logged for provenance)")
+    log(f"[paths] CURVE_COMPARISON      = {CURVE_COMPARISON} (logged for provenance; panel b uses CURVE_PROFILES)")
+    log(f"[paths] CURVE_PROFILES        = {CURVE_PROFILES}")
     log(f"[paths] PER_SAMPLE_SCALARS    = {PER_SAMPLE_SCALARS} (not used by this figure's panels; logged for provenance)")
     log(f"[paths] ALL_METRIC_COMPARISON = {ALL_METRIC_COMPARISON} (not used by this figure's panels; logged for provenance)")
     log(f"[paths] MAIN_PAPER_CANDIDATES = {MAIN_PAPER_CANDIDATES}")
     log(f"[paths] CLEANED_SCIENTIFIC_MASTER = {CLEANED_SCIENTIFIC_MASTER}")
     log(f"[paths] ACTIVE_COMPONENT_REPORT   = {ACTIVE_COMPONENT_REPORT}")
-    log(f"[paths] ACTIVE_COMPONENT_BY_SAMPLE = {ACTIVE_COMPONENT_BY_SAMPLE}")
-    log(f"[paths] ACTIVE_COMPONENT_SUMMARY   = {ACTIVE_COMPONENT_SUMMARY}")
+    log(f"[paths] ACTIVE_COMPONENT_BY_SAMPLE = {ACTIVE_COMPONENT_BY_SAMPLE}  (primary source of truth for group means)")
+    log(f"[paths] ACTIVE_COMPONENT_SUMMARY   = {ACTIVE_COMPONENT_SUMMARY}  (optional cross-check only)")
 
     fallback_notes = []
 
@@ -1223,28 +1391,31 @@ def main():
         rep_rows[g] = choose_representative_generated(g, descriptors_by_group[g], real_mean_vec)
 
     rep = {}
+    i = CENTRAL_SLICE_INDEX
     for g in GROUPS:
         r = rep_rows[g]
         vol = volumes_by_group[g][r["file"]]
-        full_cbd = r["cbd"]
-        z_idx = choose_slice_index(vol, "xy", full_cbd)
-        y_idx = choose_slice_index(vol, "xz", full_cbd)
-        x_idx = choose_slice_index(vol, "yz", full_cbd)
-        log(f"[slice:{g}] {r['file'].name}: z_idx={z_idx} (XY) y_idx={y_idx} (XZ) x_idx={x_idx} (YZ) "
-            f"full-volume CBD fraction={full_cbd:.6f}")
+        labels_present = sorted(np.unique(vol).tolist())
+        log(f"[panel-a-audit:{g}] file={r['file']}  shape={vol.shape}  labels={labels_present}  "
+            f"slice_indices=(z={i}, y={i}, x={i})  full_volume_used=yes  crop_applied=none")
         rep[g] = {"file": r["file"], "vol": vol, "pore": r["pore"], "active": r["active"],
                   "cbd": r["cbd"], "tx": r["tx"], "ty": r["ty"], "tz": r["tz"],
-                  "z_idx": z_idx, "y_idx": y_idx, "x_idx": x_idx}
+                  "z_idx": i, "y_idx": i, "x_idx": i}
 
-    # ---- panel a: 3D multiphase isosurfaces --------------------------------
+    # ---- panel a: 3D multiphase isosurfaces (fixed, fair protocol) --------
     parallel_scale = 0.72 * max(max(rep[g]["vol"].shape) for g in GROUPS)
     raw_paths = {g: TMP / f"raw_{g}.png" for g in GROUPS}
     png_paths = {g: TMP / f"render_{g}.png" for g in GROUPS}
+    render_audit = {}
     for g in GROUPS:
-        render_group_multiphase(rep[g]["vol"], g, raw_paths[g], parallel_scale)
+        render_audit[g] = render_group_multiphase(rep[g]["vol"], g, raw_paths[g], parallel_scale)
+        log(f"[panel-a-audit:{g}] render_extent={render_audit[g]['render_extent']}  "
+            f"parallel_scale={render_audit[g]['parallel_scale']:.4f}  "
+            f"cutaway_rule='{render_audit[g]['cutaway_rule']}'")
     finalize_renders(raw_paths, png_paths)
+    log("Panel a crop/zoom used: none")
 
-    # ---- panel b: official contact-fidelity metrics ------------------------
+    # ---- panel b/c: official scalar metrics --------------------------------
     scalar_df = _load_metric_csv(SCALAR_COMPARISON)
     try:
         cleaned_df = _load_metric_csv(CLEANED_SCIENTIFIC_MASTER)
@@ -1257,9 +1428,9 @@ def main():
         log(f"[metrics] optional fallback source unavailable: {exc}")
         main_paper_df = None
 
-    panel_b_resolved = load_panel_b_metrics(scalar_df, cleaned_df, main_paper_df)
+    panel_metrics = load_panel_metrics(scalar_df, cleaned_df, main_paper_df)
     for key, _label, _aliases, _ed, _eg in PANEL_B_METRICS:
-        r = panel_b_resolved[key]
+        r = panel_metrics[key]
         if Path(r["source"]) != SCALAR_COMPARISON:
             fallback_notes.append(f"'{key}' resolved from {Path(r['source']).name} instead of "
                                    f"{SCALAR_COMPARISON.name} (metric missing/ambiguous there)")
@@ -1267,34 +1438,22 @@ def main():
             fallback_notes.append(f"'{key}' relative error computed from official group means "
                                    f"(no precomputed error column in {Path(r['source']).name})")
 
-    euler_resolved = load_active_euler(scalar_df, cleaned_df, main_paper_df)
-    if Path(euler_resolved["source"]) != SCALAR_COMPARISON:
-        fallback_notes.append(f"'active_euler_abs' resolved from {Path(euler_resolved['source']).name} "
+    euler_row = load_active_euler(scalar_df, cleaned_df, main_paper_df)
+    if Path(euler_row["source"]) != SCALAR_COMPARISON:
+        fallback_notes.append(f"'active_euler_abs' resolved from {Path(euler_row['source']).name} "
                                f"instead of {SCALAR_COMPARISON.name}")
+    euler_resolved = {"real": euler_row["real"], "diffusion": euler_row["diffusion"], "gan": euler_row["gan"]}
 
-    # ---- panel c: active-component topology diagnostic ---------------------
-    json_components = load_active_component_json()
-    summary_components = load_active_component_summary_csv()
-    cross_check_component_by_sample(json_components, summary_components)
-    check_component_sanity(summary_components)
+    # ---- panel c: active-component diagnostic (by-sample primary) ---------
+    component_means = load_active_component_means_from_by_sample()
+    fallback_notes.extend(cross_check_component_sources_optional(component_means))
+    check_component_sanity(component_means)
 
-    topo_values = {}
-    real_euler = abs(euler_resolved["real"])
-    topo_values["euler"] = {
-        "real": 1.0,
-        "diffusion": abs(euler_resolved["diffusion"]) / real_euler,
-        "gan": abs(euler_resolved["gan"]) / real_euler,
-    }
-    for field in ("components", "singleton", "size_2_10", "small_frac"):
-        real_v = summary_components["real"][field]
-        topo_values[field] = {
-            "real": 1.0,
-            "diffusion": summary_components["diffusion"][field] / real_v,
-            "gan": summary_components["gan"][field] / real_v,
-        }
-    log("[panel-c] topology ratios-to-Reference:")
-    for key, _lab in TOPOLOGY_CATEGORIES:
-        log(f"  {key}: diffusion={topo_values[key]['diffusion']:.4f}  gan={topo_values[key]['gan']:.4f}")
+    fingerprint_values = {key: {g: panel_metrics[key][g] for g in GROUPS} for key in FINGERPRINT_ORDER}
+
+    # ---- panel b: official curves -------------------------------------------
+    curve_df = _load_metric_csv(CURVE_PROFILES)
+    curves = resolve_panel_b_curves(curve_df)
 
     # ---- canvas -------------------------------------------------------------
     fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=BG)
@@ -1309,8 +1468,8 @@ def main():
     add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + PANEL_LABEL_OFFSET, "c)")
 
     build_panel_a(fig, card_a, rep, png_paths)
-    build_panel_b(fig, card_b, panel_b_resolved)
-    build_panel_c(fig, card_c, topo_values)
+    build_panel_b(fig, card_b, curves)
+    build_panel_c(fig, card_c, panel_metrics, euler_resolved, component_means)
 
     # =========================== SAVE ========================================
     png = OUT / f"{STEM}.png"
@@ -1329,24 +1488,33 @@ def main():
     audit = {
         "project": str(PROJECT),
         "volume_dirs": {g: str(GROUP_VOLUME_DIRS[g]) for g in GROUPS},
-        "representative": {
-            g: {"file": rep[g]["file"].name, "pore": rep[g]["pore"], "active": rep[g]["active"],
-                "cbd": rep[g]["cbd"], "tx": rep[g]["tx"], "ty": rep[g]["ty"], "tz": rep[g]["tz"],
-                "z_idx": rep[g]["z_idx"], "y_idx": rep[g]["y_idx"], "x_idx": rep[g]["x_idx"]}
+        "panel_a_audit": {
+            g: {"file": rep[g]["file"].name, "shape": list(rep[g]["vol"].shape),
+                "slice_indices": {"z": rep[g]["z_idx"], "y": rep[g]["y_idx"], "x": rep[g]["x_idx"]},
+                "full_volume_used": True, "crop_applied": "none",
+                "render_extent": render_audit[g]["render_extent"],
+                "parallel_scale": render_audit[g]["parallel_scale"],
+                "cutaway_rule": render_audit[g]["cutaway_rule"]}
             for g in GROUPS
         },
-        "panel_b_metrics": {
-            key: {"raw_name": panel_b_resolved[key]["raw_name"], "real": panel_b_resolved[key]["real"],
-                  "diffusion": panel_b_resolved[key]["diffusion"], "gan": panel_b_resolved[key]["gan"],
-                  "diffusion_err_pct": panel_b_resolved[key]["diffusion_err"],
-                  "gan_err_pct": panel_b_resolved[key]["gan_err"],
-                  "source": panel_b_resolved[key]["source"]}
+        "representative": {
+            g: {"file": rep[g]["file"].name, "pore": rep[g]["pore"], "active": rep[g]["active"],
+                "cbd": rep[g]["cbd"], "tx": rep[g]["tx"], "ty": rep[g]["ty"], "tz": rep[g]["tz"]}
+            for g in GROUPS
+        },
+        "panel_b_curves": {
+            key: {"title": curves[key]["title"], "raw_name": curves[key]["raw_name"]}
+            for key in curves
+        },
+        "panel_c_metrics": {
+            key: {"raw_name": panel_metrics[key]["raw_name"], "real": panel_metrics[key]["real"],
+                  "diffusion": panel_metrics[key]["diffusion"], "gan": panel_metrics[key]["gan"],
+                  "source": panel_metrics[key]["source"]}
             for key, *_ in PANEL_B_METRICS
         },
-        "active_euler_abs": {"real": euler_resolved["real"], "diffusion": euler_resolved["diffusion"],
-                              "gan": euler_resolved["gan"], "source": euler_resolved["source"]},
-        "active_component_summary": summary_components,
-        "topology_ratio_to_reference": topo_values,
+        "active_euler_abs": {"real": euler_row["real"], "diffusion": euler_row["diffusion"],
+                              "gan": euler_row["gan"], "source": euler_row["source"]},
+        "active_component_means_by_sample": component_means,
         "fallbacks_used": fallback_notes,
         "saved": {"png": str(png), "pdf": str(pdf), "svg": str(svg), "tiff": str(tif_out)},
     }
@@ -1363,9 +1531,13 @@ def main():
         log(f"  {g}: {r['file'].name}  pore={r['pore']:.6f} active={r['active']:.6f} cbd={r['cbd']:.6f}  "
             f"tx={r['tx']:.6f} ty={r['ty']:.6f} tz={r['tz']:.6f}")
 
-    log("\nActive-component diagnostic means (ACTIVE_COMPONENT_SUMMARY):")
+    log("\nPanel b curves resolved:")
+    for key in curves:
+        log(f"  {key}: '{curves[key]['raw_name']}' -> \"{curves[key]['title']}\"")
+
+    log("\nActive-component diagnostic means (by-sample, primary source of truth):")
     for g in GROUPS:
-        log(f"  {g}: {summary_components[g]}")
+        log(f"  {g}: {component_means[g]}")
 
     log("\nFallbacks used:")
     if fallback_notes:
