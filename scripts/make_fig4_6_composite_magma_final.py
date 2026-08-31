@@ -248,9 +248,9 @@ PANEL_LABEL_OFFSET = 0.030
 # 3. GEOMETRY (figure fractions)
 # ============================================================================
 
-card_a = [0.035, 0.535, 0.405, 0.405]
-card_b = [0.465, 0.535, 0.500, 0.405]
-card_c = [0.035, 0.075, 0.930, 0.405]
+card_a = [0.045, 0.365, 0.380, 0.570]
+card_b = [0.445, 0.365, 0.510, 0.570]
+card_c = [0.045, 0.012, 0.910, 0.290]
 
 assert abs(card_a[1] - card_b[1]) < 1e-12, "panel a/b y mismatch"
 assert abs(card_a[3] - card_b[3]) < 1e-12, "panel a/b height mismatch"
@@ -441,7 +441,7 @@ CONNECTIVITY_STRUCT = ndimage.generate_binary_structure(3, 1)
 
 def label_pore_components(v: np.ndarray):
     """Returns (labeled_array, n_components, sizes) for the pore phase
-    (label==1) using 26-connectivity."""
+    (label==1) using 6-connectivity (face-adjacency only)."""
     pore = (v == PORE_LABEL)
     labeled, n = ndimage.label(pore, structure=CONNECTIVITY_STRUCT)
     if n == 0:
@@ -528,15 +528,24 @@ def check_component_sanity(group: str, means: dict):
 GROUP_COL_CANDIDATES = ["group", "set", "model", "category", "class", "cohort"]
 FILE_COL_CANDIDATES = ["filename", "file", "file_name", "sample", "sample_id", "sample_name",
                        "npy", "npy_file", "path", "name", "volume", "volume_file"]
+SELECTION_SCORE_COL_CANDIDATES = ["selection_score", "score", "rank_score", "median_phase_score"]
+PHASE_FRACTION_COL_CANDIDATES = ["phase_fraction_pore", "pore_fraction", "phase_fraction", "porosity"]
 
 
-def load_representative_selection() -> dict:
+def load_representative_selection() -> tuple:
+    """The official representative CSV carries multiple candidate rows per
+    group (not exactly 1): for each group, sort candidates by
+    selection_score ascending, then by the absolute phase_fraction_pore
+    difference from that group's candidate-set mean (tie-break), then by
+    filename lexicographically (final tie-break), and take the first row.
+    Returns (picked: {group: Path}, candidate_audit: {group: [row dicts]})
+    with every candidate row logged for provenance."""
     if not REPRESENTATIVE_MEDIAN_PHASE.exists():
         raise FileNotFoundError(f"[representative] missing official file: {REPRESENTATIVE_MEDIAN_PHASE}")
     df = pd.read_csv(REPRESENTATIVE_MEDIAN_PHASE)
     log(f"[representative] loaded {REPRESENTATIVE_MEDIAN_PHASE}: {df.shape[0]} rows, "
         f"columns: {list(df.columns)}")
-    log(f"[representative] first rows:\n{df.head(10).to_string()}")
+    log(f"[representative] all rows:\n{df.to_string()}")
 
     gcol = pick_col(df, GROUP_COL_CANDIDATES, "representative.group", required=False)
     fcol = pick_col(df, FILE_COL_CANDIDATES, "representative.file", required=False)
@@ -547,18 +556,58 @@ def load_representative_selection() -> dict:
             f"in {REPRESENTATIVE_MEDIAN_PHASE}. Columns present: {list(df.columns)}. "
             f"Refusing to guess -- the CSV schema must be mapped manually."
         )
+    score_col = pick_col(df, SELECTION_SCORE_COL_CANDIDATES, "representative.selection_score",
+                          required=False)
+    if score_col is None:
+        raise RuntimeError(
+            f"[representative] {REPRESENTATIVE_MEDIAN_PHASE} carries multiple candidate rows per "
+            f"group and requires a selection_score column to pick the representative one (tried "
+            f"{SELECTION_SCORE_COL_CANDIDATES}). Columns present: {list(df.columns)}."
+        )
+    phase_col = pick_col(df, PHASE_FRACTION_COL_CANDIDATES, "representative.phase_fraction_pore",
+                          required=False)
 
     df = df.copy()
     df["_group"] = df[gcol].map(map_group_alias)
 
     picked = {}
+    candidate_audit = {}
     for g in GROUPS:
-        sub = df[df["_group"] == g]
-        if len(sub) != 1:
-            raise RuntimeError(f"[representative] expected exactly 1 representative row for group "
-                                f"'{g}' in {REPRESENTATIVE_MEDIAN_PHASE}, got {len(sub)}")
-        raw_value = str(sub.iloc[0][fcol])
-        basename = Path(raw_value).name
+        sub = df[df["_group"] == g].copy()
+        if sub.empty:
+            raise RuntimeError(f"[representative] no candidate rows for group '{g}' in "
+                                f"{REPRESENTATIVE_MEDIAN_PHASE}")
+
+        sub["_score"] = pd.to_numeric(sub[score_col], errors="coerce")
+        if sub["_score"].isna().any():
+            raise RuntimeError(f"[representative] group '{g}': non-numeric selection_score values "
+                                f"in {REPRESENTATIVE_MEDIAN_PHASE}: {sub[score_col].tolist()}")
+
+        if phase_col is not None:
+            sub["_phase"] = pd.to_numeric(sub[phase_col], errors="coerce")
+            group_mean_phase = float(sub["_phase"].mean())
+            sub["_phase_diff"] = (sub["_phase"] - group_mean_phase).abs()
+        else:
+            sub["_phase"] = np.nan
+            sub["_phase_diff"] = 0.0
+            group_mean_phase = None
+
+        sub["_basename"] = sub[fcol].astype(str).map(lambda v: Path(v).name)
+        sub = sub.sort_values(by=["_score", "_phase_diff", "_basename"],
+                               ascending=[True, True, True], kind="mergesort")
+
+        candidate_audit[g] = [
+            {
+                "filename": row["_basename"],
+                "selection_score": float(row["_score"]),
+                "phase_fraction_pore": (float(row["_phase"]) if np.isfinite(row["_phase"]) else None),
+            }
+            for _, row in sub.iterrows()
+        ]
+
+        best_row = sub.iloc[0]
+        raw_value = str(best_row[fcol])
+        basename = best_row["_basename"]
         d = GROUP_VOLUME_DIRS[g]
         candidates = {f.name: f for f in d.iterdir() if f.is_file() and f.suffix.lower() == ".npy"}
         match = candidates.get(basename)
@@ -567,13 +616,17 @@ def load_representative_selection() -> dict:
             norm_lut = {_norm(name): f for name, f in candidates.items()}
             match = norm_lut.get(_norm(basename)) or norm_lut.get(_norm(basename + ".npy"))
         if match is None:
-            raise RuntimeError(f"[representative] group '{g}': value '{raw_value}' (basename "
-                                f"'{basename}') does not resolve to any file in the allowed folder "
-                                f"{d} -- refusing to use a path outside the official standardized "
-                                f"folders")
+            raise RuntimeError(f"[representative] group '{g}': selected candidate '{raw_value}' "
+                                f"(basename '{basename}') does not resolve to any file in the "
+                                f"allowed folder {d} -- refusing to use a path outside the "
+                                f"official standardized folders")
         picked[g] = match
-        log(f"[representative] group '{g}': resolved '{raw_value}' -> {match}")
-    return picked
+        log(f"[representative] group '{g}': {len(sub)} candidate rows, selection_score in "
+            f"[{sub['_score'].min():.6g}, {sub['_score'].max():.6g}]"
+            + (f", candidate-set mean phase_fraction_pore={group_mean_phase:.4f}"
+               if group_mean_phase is not None else "")
+            + f" -> chosen '{raw_value}' -> {match}")
+    return picked, candidate_audit
 
 
 # ============================================================================
@@ -1049,8 +1102,9 @@ def _resample():
 
 def build_panel_a(fig, card, rep_data, png_paths):
     ax_, ay_, aw_, ah_ = card
-    pad_x, pad_top, pad_bot = 0.016, 0.038, 0.056
+    pad_x, pad_top, pad_bot = 0.016, 0.088, 0.056
     label_w, gap_x, gap_y = 0.062, 0.018, 0.009
+    title_y_off, chip_y_off = 0.064, 0.030
 
     free_w_in = (aw_ - 2 * pad_x - label_w - 2 * gap_x) * FIG_W / 3.0
     free_h_in = (ah_ - pad_top - pad_bot - 3 * gap_y) * FIG_H / 4.0
@@ -1068,25 +1122,31 @@ def build_panel_a(fig, card, rep_data, png_paths):
     for r, name in enumerate(ROW_NAMES):
         a = fig.add_axes([gx0, row_y(r), label_w, cell_h])
         a.axis("off")
-        a.text(0.98, 0.5, name, ha="right", va="center", fontsize=8.6, fontweight="bold", color=TEXT)
+        a.text(0.98, 0.5, name, ha="right", va="center", fontsize=9.0, fontweight="bold", color=TEXT)
 
     for c, g in enumerate(GROUPS):
         x = gx0 + label_w + gap_x + c * (cell_w + gap_x)
-        fig.text(x + cell_w / 2.0, gy_top + 0.010, LABELS[g], ha="center", va="bottom",
-                 fontsize=9.6, fontweight="bold", color=TITLE_COLOR[g])
+        fig.text(x + cell_w / 2.0, gy_top + title_y_off, LABELS[g], ha="center", va="bottom",
+                 fontsize=9.8, fontweight="bold", color=TITLE_COLOR[g])
 
         rd = rep_data[g]
+
+        # Compact two-line metric chip placed in the strip between the
+        # column title and the 3D-volume cell -- never overlaid on the
+        # render/slice imagery itself. A single-line "phi | LCF | disc"
+        # string is wider than the column pitch at a readable font size and
+        # bleeds into the neighboring column's chip; splitting phi onto its
+        # own short first line keeps every line comfortably inside the
+        # column width with no overlap and no clipping.
+        chip = (f"φ={rd['pore_fraction']:.2f}\n"
+                f"LCF={rd['largest_component_fraction']:.2f}  |  "
+                f"disc={rd['disconnected_fraction']:.2f}")
+        fig.text(x + cell_w / 2.0, gy_top + chip_y_off, chip, ha="center", va="top",
+                 fontsize=6.4, color=SUBTEXT, linespacing=1.5)
 
         a = fig.add_axes([x, row_y(0), cell_w, cell_h])
         a.imshow(Image.open(png_paths[g]), interpolation="bilinear")
         image_cell(a, COLORS[g])
-        # Three short stacked lines rather than one long line: even a
-        # two-line version was still too wide for the cell and got clipped
-        # mid-value (e.g. "LCF=0.9" instead of "LCF=0.92").
-        chip = f"φ={rd['pore_fraction']:.2f}\nLCF={rd['largest_component_fraction']:.2f}\ndisc={rd['disconnected_fraction']:.2f}"
-        a.text(0.035, 0.035, chip, transform=a.transAxes, fontsize=6.2, color=SUBTEXT,
-               ha="left", va="bottom", linespacing=1.4, clip_on=True,
-               bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.3))
 
         for ri, plane in enumerate(PLANES):
             a = fig.add_axes([x, row_y(ri + 1), cell_w, cell_h])
@@ -1209,10 +1269,6 @@ def build_panel_b(fig, card, panel_b_metrics):
     plot_backbone_bars(ax_top, panel_b_metrics)
     plot_percolation_heatmap(fig, ax_bot, panel_b_metrics)
 
-    fig.text(bx_ + pad_l, by_ + pad_b - 0.026,
-             "Fragmentation appears after connected-network evaluation.",
-             ha="left", va="top", fontsize=6.6, color=SUBTEXT, style="italic")
-
 
 # ============================================================================
 # 12. PANEL C -- pair-connectedness mechanism + network-integrity inset
@@ -1221,9 +1277,14 @@ def build_panel_b(fig, card, panel_b_metrics):
 AXIS_TITLES = {"x": "Pair-connectedness, x", "y": "Pair-connectedness, y", "z": "Pair-connectedness, z"}
 
 
-def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, show_legend=False):
+def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, rmse_row, show_legend=False):
     style_axis(ax)
-    ax.set_title(AXIS_TITLES[axis_letter], pad=4.0, color=TEXT, fontweight="bold")
+    # RMSE folded directly into the subplot title (two lines) instead of a
+    # separate text box, so the panel communicates through the plotted
+    # curves rather than a block of standalone commentary.
+    title = (f"{AXIS_TITLES[axis_letter]}\n"
+             f"RMSE  PoreGen {rmse_row['diffusion']:.4f}  |  IPWGAN {rmse_row['gan']:.4f}")
+    ax.set_title(title, pad=4.0, color=TEXT, fontweight="bold", fontsize=7.2, linespacing=1.6)
     ax.set_xlabel("Lag (vox)", color=SUBTEXT)
     ax.set_ylabel("Pair-connectedness", color=SUBTEXT)
     ax.set_ylim(0, ymax * 1.08)
@@ -1273,7 +1334,7 @@ def plot_network_inset(ax, advanced_metrics):
 
 def build_panel_c(fig, card, curve_data, rmse_data, advanced_metrics):
     cx_, cy_, cw_, ch_ = card
-    header_title_y = cy_ + ch_ - 0.020
+    header_title_y = cy_ + ch_ - 0.018
     plot_top = header_title_y - 0.062
     pad_l, pad_r, pad_b = 0.040, 0.020, 0.075
 
@@ -1296,32 +1357,14 @@ def build_panel_c(fig, card, curve_data, rmse_data, advanced_metrics):
         x = cx_ + pad_l + i * (curve_plot_w + gap)
         ax = fig.add_axes([x, plot_bottom, curve_plot_w, plot_h])
         plot_pair_connectedness_axis(ax, curve_data[axis_letter], axis_letter, ymax,
-                                      show_legend=(i == 2))
+                                      rmse_data[axis_letter], show_legend=(i == 2))
 
+    # Right column: a single compact extracted-network connectivity plot,
+    # now given the full column height since RMSE moved into the curve
+    # subplot titles above -- no separate text box competing for space.
     right_x = cx_ + pad_l + curves_w + 0.028
     right_w = cx_ + cw_ - pad_r - right_x
-
-    rmse_h = plot_h * 0.34
-    rmse_y = plot_bottom + plot_h - rmse_h
-    ax_rmse = fig.add_axes([right_x, rmse_y, right_w, rmse_h])
-    ax_rmse.axis("off")
-    ax_rmse.add_patch(Rectangle((0, 0), 1, 1, transform=ax_rmse.transAxes, facecolor="white",
-                                 edgecolor=SPINE, linewidth=0.7, zorder=1))
-    rmse_lines = [
-        "Pair-connectedness RMSE",
-        f"PoreGen:  {rmse_data['x']['diffusion']:.4f} / {rmse_data['y']['diffusion']:.4f} / {rmse_data['z']['diffusion']:.4f}",
-        f"IPWGAN:   {rmse_data['x']['gan']:.4f} / {rmse_data['y']['gan']:.4f} / {rmse_data['z']['gan']:.4f}",
-        "(x / y / z)",
-    ]
-    for li, line in enumerate(rmse_lines):
-        weight = "bold" if li == 0 else ("normal" if li < 3 else "normal")
-        color = TEXT if li == 0 else SUBTEXT
-        style = "italic" if li == 3 else "normal"
-        ax_rmse.text(0.07, 0.86 - li * 0.24, line, transform=ax_rmse.transAxes, ha="left", va="top",
-                     fontsize=6.6, color=color, fontweight=weight, style=style, zorder=2)
-
-    inset_h = plot_h - rmse_h - 0.022
-    ax_inset = fig.add_axes([right_x, plot_bottom, right_w, inset_h])
+    ax_inset = fig.add_axes([right_x, plot_bottom, right_w, plot_h])
     plot_network_inset(ax_inset, advanced_metrics)
 
 
@@ -1368,7 +1411,7 @@ def main():
         log(f"[data:{g}] direct component means: {comp_means}")
 
     # ---- representative selection (official CSV only) ---------------------
-    representative_files = load_representative_selection()
+    representative_files, representative_candidates = load_representative_selection()
 
     rep_data = {}
     for g in GROUPS:
@@ -1474,6 +1517,7 @@ def main():
         "forbidden_dirs_checked": [str(p) for p in FORBIDDEN_DIRS],
         "connectivity": "6-connectivity (face-adjacency), generate_binary_structure(3, 1)",
         "panel_a_render_audit": render_audit,
+        "representative_candidates": representative_candidates,
         "representative": {
             g: {
                 "file": rep_data[g]["file"].name,
