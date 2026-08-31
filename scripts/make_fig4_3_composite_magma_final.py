@@ -36,6 +36,7 @@ matplotlib.use("Agg")
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.ticker import FuncFormatter
 
 warnings.filterwarnings("ignore")
 
@@ -167,8 +168,10 @@ CELL_LW = 1.6
 DE_FONT_SCALE = 1.12
 DE_TITLE_FS = round(8.6 * DE_FONT_SCALE, 1)
 DE_LABEL_FS = round(7.6 * DE_FONT_SCALE, 1)
-DE_TICK_FS = round(6.8 * DE_FONT_SCALE, 1)
-DE_LEGEND_FS = round(6.9 * DE_FONT_SCALE, 1)
+# Tick/legend text only: bumped an additional ~6.5% on top of DE_FONT_SCALE
+# since these read smallest in panels d/e.
+DE_TICK_FS = round(6.8 * DE_FONT_SCALE * 1.065, 1)
+DE_LEGEND_FS = round(6.9 * DE_FONT_SCALE * 1.065, 1)
 DE_METHOD_LABEL_FS = round(7.2 * DE_FONT_SCALE, 1)
 DE_VALUE_LABEL_FS = round(6.6 * DE_FONT_SCALE, 1)
 
@@ -782,7 +785,7 @@ def draw_phase_error_maps(fig, card, cols, hr_binary_roi, pred_binary_by_key):
     # misleadingly imply every method's mismatch pixels share one color
     # (each map actually uses that column's own method color).
     legend_y = y_ + h_ - 0.014
-    fig.text(gx0, legend_y, "light = correct phase   ·   colored = mismatch (per-method color)",
+    fig.text(gx0, legend_y, "Light = correct phase · Colored = mismatch",
              ha="left", va="center", fontsize=6.8, color=SUBTEXT, zorder=101)
 
 
@@ -793,8 +796,8 @@ def draw_phase_error_maps(fig, card, cols, hr_binary_roi, pred_binary_by_key):
 BAR_METRIC_SPECS = [
     ("psnr", "PSNR ↑", None),
     ("ssim", "SSIM ↑", None),
-    ("phase_fraction_error", "Phase-fraction error ↓", "sci"),
-    ("interface_density_error", "Interface-density error ↓", "sci"),
+    ("phase_fraction_error", "Phase-fraction error ↓ (×10⁻³)", "milli"),
+    ("interface_density_error", "Interface-density error ↓ (×10⁻³)", "milli"),
 ]
 
 
@@ -805,9 +808,11 @@ def format_bar_value(metric: str, v: float) -> str:
         return f"{v:.2f}"
     if metric == "ssim":
         return f"{v:.3f}"
-    # phase_fraction_error / interface_density_error: compact scientific,
-    # 4 significant digits.
-    return f"{v:.3e}"
+    # phase_fraction_error / interface_density_error: displayed in the same
+    # ×10⁻³ units as the axis/title, 3 significant digits.
+    scaled = v * 1000.0
+    decimals = max(2 - int(np.floor(np.log10(abs(scaled)))), 0) if scaled != 0 else 2
+    return f"{scaled:.{decimals}f}"
 
 
 def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
@@ -860,9 +865,10 @@ def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
                error_kw=dict(ecolor=TEXT, elinewidth=1.0, capsize=2.5))
         ax.set_xticks(xs)
         ax.set_xticklabels([LABELS[m] for m in BAR_METHODS], fontsize=DE_METHOD_LABEL_FS)
-        if fmt == "sci":
-            ax.ticklabel_format(axis="y", style="scientific", scilimits=(-2, 2))
-            ax.yaxis.get_offset_text().set_fontsize(DE_TICK_FS)
+        if fmt == "milli":
+            # Ticks read directly in the same ×10⁻³ units stated in the
+            # title, so no separate matplotlib offset-text box is needed.
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda val, pos: f"{val * 1000:g}"))
         # Headroom for the value labels drawn above each bar+error-bar.
         ax.margins(y=0.30)
 
@@ -870,7 +876,7 @@ def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
             if np.isnan(v):
                 continue
             ax.text(xi, v + e, format_bar_value(metric, v), ha="center", va="bottom",
-                    fontsize=DE_VALUE_LABEL_FS, color=TEXT,
+                    fontsize=DE_VALUE_LABEL_FS, color=SUBTEXT, fontweight="normal",
                     transform=ax.transData)
 
 
