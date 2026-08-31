@@ -149,9 +149,13 @@ PANEL_B_METRICS = [
      ["interface_0_2", "interface_pore_cbd", "pore_cbd_interface_density"], 76.38, 36.55),
     ("interface_active_cbd", "Active–CBD",
      ["interface_1_2", "interface_active_cbd", "active_cbd_interface_density"], 362.76, 48.02),
+    # Must resolve exactly to the density variant -- the official CSV also
+    # carries tpb_voxel_count_2x2x2 and tpb_fraction_2x2x2 for the same
+    # 2x2x2 neighborhood, so the bare "tpb"/"tpb_proxy"/"triple_phase_contact"
+    # aliases are deliberately NOT included here: they are substrings of all
+    # three column names and would make this metric ambiguous.
     ("tpb_proxy", "TPB proxy",
-     ["tpb", "tpb_proxy", "triple_phase_contact", "triple_phase_contact_proxy",
-      "triple_phase_contact_proxy_density"], 479.01, 50.78),
+     ["tpb_density_2x2x2", "tpb_proxy_density", "triple_phase_contact_proxy_density"], 479.01, 50.78),
     ("active_to_pore", "Active→pore",
      ["active_surface_exposed_to_pore", "active_contact_pore",
       "active_surface_contacting_pore", "muller_active_surface_pore"], 12.87, 3.59),
@@ -636,13 +640,23 @@ VALUE_COL_ALIASES = {
                   "model_diffusion"],
     "gan": ["gan", "survol", "gan_mean", "survol_mean", "gan_value", "model_gan"],
 }
+# Only columns confirmed to already be percentages belong here. In
+# particular "diffusion_error" / "gan_error" (and "microgen3d_error" /
+# "survol_error") are deliberately EXCLUDED: in
+# section_4_5_cleaned_scientific_metric_master.csv and
+# section_4_5_main_paper_candidate_metrics.csv those columns hold absolute
+# errors, not percentages, so matching them here would silently mislabel an
+# absolute error as a relative-error percentage. When no column below is
+# present, resolve_metric() falls back to computing the relative error from
+# the real/diffusion/gan means instead of guessing at an ambiguous column.
 ERROR_COL_ALIASES = {
-    "diffusion": ["diffusion_error_pct", "diffusion_rel_error_pct", "diffusion_error",
-                  "diffusion_pct_error", "microgen3d_error_pct", "microgen3d_rel_error_pct",
-                  "microgen3d_error", "diffusion_relative_error_pct"],
-    "gan": ["gan_error_pct", "gan_rel_error_pct", "gan_error", "gan_pct_error",
-            "survol_error_pct", "survol_rel_error_pct", "survol_error",
-            "gan_relative_error_pct"],
+    "diffusion": ["diffusion_relative_error_percent", "diffusion_relative_error_pct",
+                  "diffusion_error_pct", "diffusion_rel_error_pct", "diffusion_pct_error",
+                  "microgen3d_relative_error_percent", "microgen3d_error_pct",
+                  "microgen3d_rel_error_pct"],
+    "gan": ["gan_relative_error_percent", "gan_relative_error_pct", "gan_error_pct",
+            "gan_rel_error_pct", "gan_pct_error", "survol_relative_error_percent",
+            "survol_error_pct", "survol_rel_error_pct"],
 }
 
 
