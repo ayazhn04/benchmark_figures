@@ -236,11 +236,14 @@ LINEWIDTHS = {"real": 1.85, "diffusion": 1.85, "gan": 1.95}
 CARD_LW = 0.8
 CELL_LW = 1.6
 
-# Grayscale phase colors for panel a -- these color the material phase
-# inside each slice/render, not the model group (model identity is carried
-# by the column titles and cell borders instead, as in Figures 4.1-4.4).
-# pore = near-black, active = light gray/white, CBD = medium/darker gray.
-PHASE_COLORS = {0: "#0A0A0A", 1: "#F0F0F0", 2: "#707070"}
+# Categorical phase colors for panel a -- these color the material phase
+# inside each slice AND the 3D cutaway render (the same three flat colors
+# in both rows, so the reader immediately reads them as the same three
+# phases), not the model group (model identity is carried by the column
+# titles and cell borders instead, as in Figures 4.1-4.4). Flat categorical
+# colors, not a decorative gradient: pore = deep purple/near-black,
+# active = orange/copper, CBD = pale/bright yellow.
+PHASE_COLORS = {0: "#1A0B2E", 1: "#E0792A", 2: "#F5E27A"}
 PHASE_NAMES = {0: "pore", 1: "active", 2: "CBD"}
 PHASE_CMAP = ListedColormap([PHASE_COLORS[0], PHASE_COLORS[1], PHASE_COLORS[2]])
 
@@ -493,15 +496,26 @@ CENTRAL_SLICE_INDEX = 64  # z = y = x = 64, for a (128,128,128) volume
 
 
 # ============================================================================
-# 9. 3D RENDERING (panel a) -- true marching-cubes isosurfaces for the
-# active-material and CBD phase masks of the raw, unsmoothed representative
-# volume, restricted to a fixed geometric octant-cutaway mask applied
-# IDENTICALLY to all three groups (same convention as Figure 4.2 panel a:
-# a full cube with the same missing 1/8 corner, exposing the interior).
-# Pore is never rendered as a surface. No MIP fallback: if PyVista +
-# scikit-image marching_cubes cannot run, the script fails loudly rather
-# than silently substituting another representation.
+# 9. 3D RENDERING (panel a) -- a solid, opaque, categorically-colored
+# cutaway cube (all three phases as flat-colored voxel cells), restricted to
+# a fixed geometric octant-cutaway mask applied IDENTICALLY to all three
+# groups -- the exact rendering technique used by Figure 4.2 panel a
+# (render_cutaway_cube_pyvista), reused here so the two figures read as the
+# same family: a solid per-voxel-phase cube read through pv.ImageData cell
+# data and a threshold, not translucent marching-cubes isosurfaces (which
+# read as a "soft cloud" rather than a clean cube). The cube is downsampled
+# by majority vote for the render ONLY (a resolution reduction for display
+# performance, not a content-dependent crop -- the render_extent audited
+# below, the wireframe box, and the camera all still span the FULL
+# [0,128]x[0,128]x[0,128] volume). No MIP fallback: if PyVista cannot run,
+# the script fails loudly rather than silently substituting another
+# representation.
 # ============================================================================
+
+CUBE_DOWNSAMPLE = 4  # 128^3 -> 32^3 for the 3D render only (same 32^3 render
+                      # resolution as Figure 4.2's 64^3 -> 32^3); all metrics,
+                      # sanity checks, and the panel-a 2D slices elsewhere in
+                      # this script use the full-resolution 128^3 volume.
 
 
 def _octant_keep_mask_zyx(nz: int, ny: int, nx: int) -> np.ndarray:
@@ -515,53 +529,61 @@ def _octant_keep_mask_zyx(nz: int, ny: int, nx: int) -> np.ndarray:
     return keep
 
 
+def _downsample_labels_mode(vol: np.ndarray, factor: int) -> np.ndarray:
+    """Block-mode (majority-vote) downsample that only ever emits values
+    already present in the volume -- i.e. real voxel labels, not
+    interpolated/fake ones. Same technique as Figure 4.2's cutaway-cube
+    renderer."""
+    nz, ny, nx = vol.shape
+    nz2, ny2, nx2 = (nz // factor) * factor, (ny // factor) * factor, (nx // factor) * factor
+    v = vol[:nz2, :ny2, :nx2]
+    b = v.reshape(nz2 // factor, factor, ny2 // factor, factor, nx2 // factor, factor)
+    b = b.transpose(0, 2, 4, 1, 3, 5).reshape(nz2 // factor, ny2 // factor, nx2 // factor, -1)
+    counts = np.stack([(b == k).sum(-1) for k in (0, 1, 2)], axis=-1)
+    return np.argmax(counts, axis=-1).astype(np.uint8)
+
+
 def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float) -> dict:
     import pyvista as pv
-    from skimage import measure
 
     try:
         pv.start_xvfb(wait=0.2)
     except Exception:
         pass
 
-    nz, ny, nx = vol.shape
+    nz, ny, nx = vol.shape  # full (128,128,128) -- the audited render extent
     center = np.array([nz / 2.0, ny / 2.0, nx / 2.0])
-    keep = _octant_keep_mask_zyx(nz, ny, nx)
+
+    ds = _downsample_labels_mode(vol, CUBE_DOWNSAMPLE)
+    dz, dy, dx = ds.shape
+    spacing = float(CUBE_DOWNSAMPLE)  # each downsampled cell spans CUBE_DOWNSAMPLE
+                                       # original voxels, so the grid's physical
+                                       # extent is still the full [0,nz]x[0,ny]x[0,nx].
+
+    grid = pv.ImageData()
+    grid.dimensions = np.array([dx, dy, dz]) + 1
+    grid.origin = (0.0, 0.0, 0.0)
+    grid.spacing = (spacing, spacing, spacing)
+    grid.cell_data["phase"] = np.transpose(ds, (2, 1, 0)).flatten(order="F")
+    keep_zyx = _octant_keep_mask_zyx(dz, dy, dx)
+    grid.cell_data["keep"] = np.transpose(keep_zyx, (2, 1, 0)).flatten(order="F").astype(np.uint8)
+
+    sub = grid.threshold(0.5, scalars="keep")
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
-
-    surfaces = [
-        (1, PHASE_COLORS[1], 0.70),  # active material
-        (2, PHASE_COLORS[2], 0.92),  # CBD -- more opaque, highlighted
-    ]
-    any_surface = False
-    for label, color, opacity in surfaces:
-        mask = ((vol == label) & keep).astype(np.float32)
-        if mask.min() >= 0.5 or mask.max() <= 0.5:
-            log(f"[render:{group}] phase {label} ({PHASE_NAMES[label]}) has a degenerate iso-level "
-                f"within the cutaway mask (absent or filling the whole volume) -- skipping that "
-                f"surface only")
-            continue
-        verts, faces, _, _ = measure.marching_cubes(mask, level=0.5)
-        faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
-        mesh = pv.PolyData(verts, faces_pv)
-        specular = 0.30 if label == 2 else 0.16
-        pl.add_mesh(mesh, color=color, opacity=opacity, smooth_shading=True,
-                    specular=specular, specular_power=18, ambient=0.26, diffuse=0.82,
-                    show_scalar_bar=False)
-        any_surface = True
-
-    if not any_surface:
-        raise RuntimeError(f"[render:{group}] neither active-material nor CBD phase produced a "
-                            f"usable isosurface inside the cutaway mask -- refusing to render an "
-                            f"empty cell")
+    # Solid, opaque, flat-colored voxel cells (cell data, not point data --
+    # no interpolation/smoothing across phase boundaries) for all three
+    # phases at once, exactly like Figure 4.2's cutaway-cube render; pore is
+    # included here (unlike the old isosurface version) because a solid cube
+    # needs every phase filled in to read as a cube rather than a hollow shell.
+    pl.add_mesh(sub, scalars="phase", cmap=PHASE_CMAP, clim=[0, 2], show_scalar_bar=False)
 
     # Full [0,nz]x[0,ny]x[0,nx] cube wireframe -- identical extent for every
     # group regardless of data content, so the rendered scale is fair by
     # construction rather than by post-hoc cropping.
     pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
-                color=COLORS[group], line_width=2.2, opacity=0.55)
+                color=COLORS[group], line_width=2.4, opacity=0.65)
 
     # identical camera + identical parallel scale across groups => comparable
     # size, no cropping; same convention as Figures 4.1/4.2/4.4.
@@ -578,7 +600,8 @@ def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
 
     return {"render_extent": [[0, nz], [0, ny], [0, nx]], "parallel_scale": float(parallel_scale),
             "cutaway_rule": "remove octant z>=nz/2, y<ny/2, x>=nx/2 (nearest the fixed camera)",
-            "camera_direction": direction.tolist()}
+            "camera_direction": direction.tolist(),
+            "render_downsample_factor": CUBE_DOWNSAMPLE}
 
 
 def render_group_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float) -> dict:
@@ -586,8 +609,8 @@ def render_group_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel
         return render_multiphase(vol, group, out_raw, parallel_scale)
     except Exception as exc:
         raise RuntimeError(
-            f"[render:{group}] true 3D multiphase isosurface rendering failed and no fallback is "
-            f"permitted for this figure (PyVista + scikit-image marching_cubes are required): {exc}"
+            f"[render:{group}] 3D multiphase cutaway-cube rendering failed and no fallback is "
+            f"permitted for this figure (PyVista is required): {exc}"
         ) from exc
 
 
@@ -1401,18 +1424,41 @@ def build_panel_a(fig, card, rep, png_paths):
 # ============================================================================
 
 
+# Per-family axis labels -- more informative than a single generic
+# "Coordinate (vox)" / "Value" pair for every subplot, keyed by the
+# official curve-profiles "family" value of the SELECTED candidate (not by
+# descriptor string, so this stays correct however the candidate-priority
+# fallback in resolve_panel_b_curves resolves each slot).
+FAMILY_AXIS_LABELS = {
+    "tpcf": ("Lag / radius (vox)", "Two-point correlation"),
+    "cross_tpcf": ("Lag / radius (vox)", "Two-point correlation"),
+    "lineal_path": ("Segment length (vox)", "Lineal-path probability"),
+    "chord_hist": ("Chord length (vox)", "Density"),
+    "psd": ("Radial frequency / bin", "Spectral density"),
+    "lcc_tpcf_proxy": ("Lag / radius (vox)", "Two-point correlation (LCC proxy)"),
+}
+DEFAULT_AXIS_LABELS = ("Coordinate (vox)", "Value")
+
+
+def axis_labels_for_family(family) -> tuple:
+    return FAMILY_AXIS_LABELS.get(str(family).lower(), DEFAULT_AXIS_LABELS)
+
+
 def plot_descriptor_curve(ax, curve_entry, show_legend=False):
     style_axis(ax)
     ax.set_title(curve_entry["title"], pad=4.5, color=TEXT, fontweight="bold")
-    ax.set_xlabel("Coordinate (vox)", color=SUBTEXT)
-    ax.set_ylabel("Value", color=SUBTEXT)
+    xlabel, ylabel = axis_labels_for_family(curve_entry["info"]["family"])
+    ax.set_xlabel(xlabel, color=SUBTEXT)
+    ax.set_ylabel(ylabel, color=SUBTEXT)
 
     data = curve_entry["data"]
     for g in GROUPS:
         d = data[g]
         x, y, std = d["x"], d["y"], d["std"]
         if g == "real" and std is not None and np.any(np.isfinite(std)) and np.any(std > 0):
-            ax.fill_between(x, y - std, y + std, color=COLORS[g], alpha=0.20, linewidth=0, zorder=1)
+            # Kept subtle (low alpha, drawn first/below) so the MicroGen3D
+            # and SurVol lines on top of it stay clearly readable.
+            ax.fill_between(x, y - std, y + std, color=COLORS[g], alpha=0.14, linewidth=0, zorder=1)
         ax.plot(x, y, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
                 solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
 
@@ -1460,7 +1506,7 @@ FRAGMENTATION_LABELS = ["Active Euler\n|χ|", "Active\ncomponents", "Singleton\n
 
 def plot_interface_fingerprint(ax, panel_metrics):
     style_axis(ax)
-    ax.set_title("Interface / contact-hierarchy fingerprint", pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_title("Interface / contact-hierarchy fingerprint", pad=6.5, color=TEXT, fontweight="bold")
     ax.set_ylabel("Density / fraction (log scale)", color=SUBTEXT)
     ax.set_yscale("log")
 
@@ -1490,14 +1536,19 @@ def plot_interface_fingerprint(ax, panel_metrics):
     ax.set_xlim(-0.4, len(FINGERPRINT_ORDER) - 0.6)
     ax.margins(y=0.16)
 
-    leg = ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
+    # "best" rather than a fixed corner: the fingerprint's value pattern
+    # (which metric is lowest/highest) is data-dependent, so a fixed corner
+    # can end up sitting on top of a curve (e.g. a near-zero first point);
+    # letting matplotlib pick the least-overlapping corner keeps every
+    # curve visible.
+    leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
                     framealpha=0.94, handlelength=2.0, borderpad=0.4, labelspacing=0.3, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
 
 
 def plot_active_fragmentation(ax, euler_resolved, component_means):
     style_axis(ax)
-    ax.set_title("Active-domain continuity / fragmentation", pad=4.5, color=TEXT, fontweight="bold")
+    ax.set_title("Active-domain continuity / fragmentation", pad=6.5, color=TEXT, fontweight="bold")
     ax.set_ylabel("Value (log scale)", color=SUBTEXT)
     ax.set_yscale("log")
 
@@ -1519,12 +1570,22 @@ def plot_active_fragmentation(ax, euler_resolved, component_means):
     ax.set_xticks(xs)
     ax.set_xticklabels(FRAGMENTATION_LABELS, fontsize=7.0)
     ax.set_xlim(-0.5, len(FRAGMENTATION_ORDER) - 0.5)
+    # 30% extra headroom on the log scale (matplotlib computes margins in
+    # the transformed/log coordinate space once set_yscale is applied, so
+    # this adds genuine extra decades rather than a naive linear fraction)
+    # so the highest MicroGen3D markers never touch the top border, while
+    # the smallest tiny-component-fraction markers stay clearly visible.
+    ax.margins(y=0.30)
 
 
 def build_panel_c(fig, card, panel_metrics, euler_resolved, component_means):
     cx_, cy_, cw_, ch_ = card
     header_title_y = cy_ + ch_ - 0.020
-    plot_top = header_title_y - 0.030
+    # Extra headroom below the panel-level header ("Interface hierarchy and
+    # active-domain continuity") before the subplot titles/axes start, so
+    # the header and the c-left/c-right subplot titles don't read as
+    # cramped against each other.
+    plot_top = header_title_y - 0.046
     c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.046, 0.055
     plot_bottom = cy_ + c_pb
     plot_h_c = plot_top - plot_bottom
@@ -1610,7 +1671,10 @@ def main():
         render_audit[g] = render_group_multiphase(rep[g]["vol"], g, raw_paths[g], parallel_scale)
         log(f"[panel-a-audit:{g}] render_extent={render_audit[g]['render_extent']}  "
             f"parallel_scale={render_audit[g]['parallel_scale']:.4f}  "
-            f"cutaway_rule='{render_audit[g]['cutaway_rule']}'")
+            f"cutaway_rule='{render_audit[g]['cutaway_rule']}'  "
+            f"render_downsample_factor={render_audit[g]['render_downsample_factor']} "
+            f"(display-resolution reduction only, not a crop -- render_extent above is still the "
+            f"full volume)")
     finalize_renders(raw_paths, png_paths)
     log("Panel a crop/zoom used: none")
 
@@ -1696,7 +1760,8 @@ def main():
                 "full_volume_used": True, "crop_applied": "none",
                 "render_extent": render_audit[g]["render_extent"],
                 "parallel_scale": render_audit[g]["parallel_scale"],
-                "cutaway_rule": render_audit[g]["cutaway_rule"]}
+                "cutaway_rule": render_audit[g]["cutaway_rule"],
+                "render_downsample_factor": render_audit[g]["render_downsample_factor"]}
             for g in GROUPS
         },
         "representative": {
