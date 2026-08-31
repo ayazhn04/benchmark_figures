@@ -794,7 +794,7 @@ def build_panel_a(fig, card, rep, png_paths):
             image_cell(a, COLORS[g])
             if c == 0:
                 for txt, (tx, ty), ha, va in DIRECTION_LABELS[ROW_NAMES[r + 1]]:
-                    a.text(tx, ty, txt, transform=a.transAxes, fontsize=6.4, fontweight="bold",
+                    a.text(tx, ty, txt, transform=a.transAxes, fontsize=6.9, fontweight="bold",
                            color="white", ha=ha, va=va,
                            bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.2))
 
@@ -819,7 +819,7 @@ def build_panel_a(fig, card, rep, png_paths):
 TRANSITION_AXES = ["x", "y", "z"]
 
 
-def plot_directional_transitions(ax, scalar_df, tensor_err):
+def plot_directional_transitions(ax, scalar_df):
     style_axis(ax, grid=False)
     ax.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
     ax.set_axisbelow(True)
@@ -849,15 +849,12 @@ def plot_directional_transitions(ax, scalar_df, tensor_err):
     ax.set_xticklabels(["X", "Y", "Z"], fontsize=7.6)
     ax.margins(y=0.30)
 
-    leg = ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor=SPINE,
+    # Single model legend for all of panel b -- placed here, upper-right,
+    # so the 2x2 block carries exactly one legend (see plot_autocovariance).
+    leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
                      framealpha=0.94, handlelength=1.6, borderpad=0.4, labelspacing=0.3, fontsize=6.8)
     leg.get_frame().set_linewidth(0.6)
-
-    note = (f"ACF orientation error\nAB-CDM   {tensor_err['diffusion']:.3f}°\n"
-            f"SurVol   {tensor_err['gan']:.3f}°")
-    ax.text(0.985, 0.965, note, transform=ax.transAxes, fontsize=6.3, color=SUBTEXT,
-            ha="right", va="top", linespacing=1.5, zorder=6,
-            bbox=dict(facecolor="white", edgecolor=SPINE, linewidth=0.5, alpha=0.92, pad=2.2))
+    leg.set_zorder(8)
 
 
 def plot_autocovariance(ax, curves, title, ylim, xlim, show_ylabel, show_legend):
@@ -888,7 +885,7 @@ def plot_autocovariance(ax, curves, title, ylim, xlim, show_ylabel, show_legend)
         leg.set_zorder(8)
 
 
-def build_panel_b(fig, card, scalar_df, tensor_err, autocov):
+def build_panel_b(fig, card, scalar_df, autocov):
     bx_, by_, bw_, bh_ = card
     b_pl, b_pr, b_pt, b_pb = 0.045, 0.018, 0.040, 0.046
     b_gx, b_gy = 0.058, 0.076
@@ -903,7 +900,7 @@ def build_panel_b(fig, card, scalar_df, tensor_err, autocov):
         y = by_ + bh_ - b_pt - (r + 1) * plot_h - r * b_gy
         axes[key] = fig.add_axes([x, y, plot_w, plot_h])
 
-    plot_directional_transitions(axes["bars"], scalar_df, tensor_err)
+    plot_directional_transitions(axes["bars"], scalar_df)
 
     # Identical y-limits (and x-limits, since the coordinate grids match by
     # construction -- see load_autocovariance_curves) across all three
@@ -934,8 +931,10 @@ def build_panel_b(fig, card, scalar_df, tensor_err, autocov):
         log("[panel-b-curves] x/y/z coordinate grids differ -> each normalized-autocovariance "
             "subplot keeps its own x-extent")
 
+    # No per-subplot legend here -- the single panel-b model legend now lives
+    # in the Directional transitions subplot (upper-right).
     plot_autocovariance(axes["x"], autocov["x"], "Normalized autocovariance — X", ylim, xlim,
-                         show_ylabel=False, show_legend=True)
+                         show_ylabel=False, show_legend=False)
     plot_autocovariance(axes["y"], autocov["y"], "Normalized autocovariance — Y", ylim, xlim,
                          show_ylabel=True, show_legend=False)
     plot_autocovariance(axes["z"], autocov["z"], "Normalized autocovariance — Z", ylim, xlim,
@@ -970,7 +969,9 @@ def plot_percolation(ax, perc_agg):
 
     ax.set_xticks(xs)
     ax.set_xticklabels(["X", "Y", "Z"], fontsize=7.6)
-    ax.set_ylim(0, 1.08)
+    # Extra headroom above the tallest (100%) bars so every percentage label
+    # sits fully inside the plotting area with visible whitespace above it.
+    ax.set_ylim(0, 1.15)
 
 
 DSTAR_MARKER_OFFSET = {"real": -0.16, "diffusion": 0.0, "gan": 0.16}
@@ -985,7 +986,21 @@ def plot_transport(ax, dstar_agg):
     xs = np.arange(3)
     all_vals = np.array([float(dstar_agg[(g, axis)]) for g in GROUPS for axis in ("x", "y", "z")])
     positive = all_vals[all_vals > 0]
-    floor = float(positive.min()) / 3.0 if positive.size else 1e-4
+
+    # Data-driven log-space padding: the smallest positive group mean sits
+    # well above the bottom spine and the largest sits well below the top
+    # spine, so no marker (including the AB-CDM X/Y diamonds) reads as
+    # touching the frame. Values/data are never altered -- only the axis
+    # range is chosen from them.
+    if positive.size:
+        lower_y = float(positive.min()) / 1.9
+        upper_y = float(positive.max()) * 1.5
+    else:
+        lower_y, upper_y = 1e-4, 1.0
+    ax.set_ylim(lower_y, upper_y)
+    # Display-only floor for exact-zero D* markers (see below) -- kept
+    # safely inside the axis range set above rather than at its edge.
+    floor = lower_y * 1.2
 
     for g in GROUPS:
         vals = np.array([float(dstar_agg[(g, axis)]) for axis in ("x", "y", "z")])
@@ -1008,16 +1023,23 @@ def plot_transport(ax, dstar_agg):
     ax.set_xticks(xs)
     ax.set_xticklabels(["X", "Y", "Z"], fontsize=7.6)
     ax.set_xlim(-0.55, 2.55)
-
-    ax.text(0.5, -0.30, "log scale; nonpercolating samples contribute D*=0 to the ensemble mean",
-            transform=ax.transAxes, fontsize=6.2, color=SUBTEXT, ha="center", va="top")
+    # The "log scale; D*=0 ..." note is drawn by build_panel_c, positioned
+    # just below this axis, so its vertical placement can be tuned together
+    # with the rest of panel c's geometry.
 
 
 def build_panel_c(fig, card, perc_agg, dstar_agg):
     cx_, cy_, cw_, ch_ = card
     header_title_y = cy_ + ch_ - 0.020
-    plot_top = header_title_y - 0.030
-    c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.075, 0.055
+    # A noticeably larger card-heading-to-subplot-title gap than before (was
+    # 0.030) so the card heading and the subplot titles read as two clearly
+    # separate levels of hierarchy rather than a two-line title. The bottom
+    # padding is correspondingly reduced (the D*=0 note that used to live
+    # down there now sits just under the right axis instead -- see below),
+    # which both uses the previously empty lower whitespace and gives the
+    # plotting axes a bit more height.
+    plot_top = header_title_y - 0.058
+    c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.044, 0.055
     plot_bottom = cy_ + c_pb
     plot_h_c = plot_top - plot_bottom
     plot_w_c = (cw_ - c_pl - c_pr - c_gx) / 2.0
@@ -1041,6 +1063,13 @@ def build_panel_c(fig, card, perc_agg, dstar_agg):
 
     plot_percolation(ax_left, perc_agg)
     plot_transport(ax_right, dstar_agg)
+
+    # D*=0 explanatory note -- kept, but moved up close under the right
+    # (structural-transport) subplot's x-axis, inside the card, instead of
+    # sitting near the card's bottom border.
+    fig.text(right_x + plot_w_c / 2.0, plot_bottom - 0.018,
+             "log scale; nonpercolating samples contribute D*=0 to the ensemble mean",
+             ha="center", va="top", fontsize=6.2, color=SUBTEXT)
 
 
 # ============================================================================
@@ -1118,7 +1147,7 @@ def main():
     add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + PANEL_LABEL_OFFSET, "c)")
 
     build_panel_a(fig, card_a, rep, png_paths)
-    build_panel_b(fig, card_b, scalar_df, tensor_err, autocov)
+    build_panel_b(fig, card_b, scalar_df, autocov)
     build_panel_c(fig, card_c, perc_agg, dstar_agg)
 
     # =========================== SAVE ========================================
