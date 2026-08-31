@@ -230,8 +230,8 @@ COLORS = {"real": "#8C93A1", "diffusion": "#F2A93B", "gan": "#772A8E"}
 LABELS = {"real": "Reference", "diffusion": "MicroGen3D", "gan": "SurVol"}
 MARKERS = {"real": "o", "diffusion": "D", "gan": "^"}
 TITLE_COLOR = {"real": TEXT, "diffusion": COLORS["diffusion"], "gan": COLORS["gan"]}
-LINESTYLES = {"real": "-", "diffusion": "-", "gan": (0, (5.5, 2.2))}
-LINEWIDTHS = {"real": 1.85, "diffusion": 1.85, "gan": 1.95}
+LINESTYLES = {"real": "-", "diffusion": "-", "gan": (0, (6.5, 2.6))}
+LINEWIDTHS = {"real": 1.85, "diffusion": 1.85, "gan": 2.35}
 
 CARD_LW = 0.8
 CELL_LW = 1.6
@@ -241,9 +241,10 @@ CELL_LW = 1.6
 # in both rows, so the reader immediately reads them as the same three
 # phases), not the model group (model identity is carried by the column
 # titles and cell borders instead, as in Figures 4.1-4.4). Flat categorical
-# colors, not a decorative gradient: pore = deep purple/near-black,
-# active = orange/copper, CBD = pale/bright yellow.
-PHASE_COLORS = {0: "#1A0B2E", 1: "#E0792A", 2: "#F5E27A"}
+# colors, not a decorative gradient: pore = deep violet/dark purple (kept
+# clearly purple rather than near-black, since default 3D lighting darkens
+# it further), active = orange/copper, CBD = pale/bright yellow.
+PHASE_COLORS = {0: "#3C1A5B", 1: "#E0792A", 2: "#F5E27A"}
 PHASE_NAMES = {0: "pore", 1: "active", 2: "CBD"}
 PHASE_CMAP = ListedColormap([PHASE_COLORS[0], PHASE_COLORS[1], PHASE_COLORS[2]])
 
@@ -577,7 +578,11 @@ def render_multiphase(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
     # phases at once, exactly like Figure 4.2's cutaway-cube render; pore is
     # included here (unlike the old isosurface version) because a solid cube
     # needs every phase filled in to read as a cube rather than a hollow shell.
-    pl.add_mesh(sub, scalars="phase", cmap=PHASE_CMAP, clim=[0, 2], show_scalar_bar=False)
+    # Explicit ambient term so the darkest phase color (pore) still reads as
+    # a clear violet on faces angled away from the light, rather than
+    # collapsing toward black under default lighting.
+    pl.add_mesh(sub, scalars="phase", cmap=PHASE_CMAP, clim=[0, 2], show_scalar_bar=False,
+                ambient=0.42, diffuse=0.75, specular=0.05)
 
     # Full [0,nz]x[0,ny]x[0,nx] cube wireframe -- identical extent for every
     # group regardless of data content, so the rendered scale is fair by
@@ -1458,15 +1463,18 @@ def plot_descriptor_curve(ax, curve_entry, show_legend=False):
         if g == "real" and std is not None and np.any(np.isfinite(std)) and np.any(std > 0):
             # Kept subtle (low alpha, drawn first/below) so the MicroGen3D
             # and SurVol lines on top of it stay clearly readable.
-            ax.fill_between(x, y - std, y + std, color=COLORS[g], alpha=0.14, linewidth=0, zorder=1)
+            ax.fill_between(x, y - std, y + std, color=COLORS[g], alpha=0.11, linewidth=0, zorder=1)
         ax.plot(x, y, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
                 solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
 
     ax.margins(x=0.02, y=0.06)
 
     if show_legend:
+        # Longer handles (handlelength=3.2) so the SurVol dash pattern shows
+        # a full dash-gap-dash cycle inside the legend swatch instead of
+        # reading as a near-solid short segment.
         leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
-                        framealpha=0.94, handlelength=2.3, borderpad=0.45, labelspacing=0.34)
+                        framealpha=0.94, handlelength=3.2, borderpad=0.45, labelspacing=0.38)
         leg.get_frame().set_linewidth(0.6)
         leg.set_zorder(8)
 
@@ -1542,7 +1550,7 @@ def plot_interface_fingerprint(ax, panel_metrics):
     # letting matplotlib pick the least-overlapping corner keeps every
     # curve visible.
     leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
-                    framealpha=0.94, handlelength=2.0, borderpad=0.4, labelspacing=0.3, fontsize=7.0)
+                    framealpha=0.94, handlelength=2.8, borderpad=0.4, labelspacing=0.32, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
 
 
@@ -1569,13 +1577,18 @@ def plot_active_fragmentation(ax, euler_resolved, component_means):
 
     ax.set_xticks(xs)
     ax.set_xticklabels(FRAGMENTATION_LABELS, fontsize=7.0)
-    ax.set_xlim(-0.5, len(FRAGMENTATION_ORDER) - 0.5)
-    # 30% extra headroom on the log scale (matplotlib computes margins in
+    ax.tick_params(axis="x", pad=5.5)  # a bit more breathing room for the wrapped 2-line labels
+    ax.set_xlim(-0.6, len(FRAGMENTATION_ORDER) - 0.4)
+    # 40% extra headroom on the log scale (matplotlib computes margins in
     # the transformed/log coordinate space once set_yscale is applied, so
     # this adds genuine extra decades rather than a naive linear fraction)
-    # so the highest MicroGen3D markers never touch the top border, while
-    # the smallest tiny-component-fraction markers stay clearly visible.
-    ax.margins(y=0.30)
+    # so the highest MicroGen3D markers sit well clear of the top border,
+    # while the smallest tiny-component-fraction markers stay clearly visible.
+    ax.margins(y=0.40)
+
+    leg = ax.legend(loc="best", frameon=True, facecolor="white", edgecolor=SPINE,
+                    framealpha=0.94, handlelength=2.0, borderpad=0.4, labelspacing=0.32, fontsize=7.0)
+    leg.get_frame().set_linewidth(0.6)
 
 
 def build_panel_c(fig, card, panel_metrics, euler_resolved, component_means):
@@ -1585,7 +1598,7 @@ def build_panel_c(fig, card, panel_metrics, euler_resolved, component_means):
     # active-domain continuity") before the subplot titles/axes start, so
     # the header and the c-left/c-right subplot titles don't read as
     # cramped against each other.
-    plot_top = header_title_y - 0.046
+    plot_top = header_title_y - 0.064
     c_pl, c_pr, c_pb, c_gx = 0.045, 0.020, 0.046, 0.055
     plot_bottom = cy_ + c_pb
     plot_h_c = plot_top - plot_bottom
@@ -1663,7 +1676,11 @@ def main():
                   "z_idx": i, "y_idx": i, "x_idx": i}
 
     # ---- panel a: 3D multiphase isosurfaces (fixed, fair protocol) --------
-    parallel_scale = 0.72 * max(max(rep[g]["vol"].shape) for g in GROUPS)
+    # Slightly larger multiplier than the previous pass (0.72 -> 0.82) for a
+    # bit more inner padding / slight zoom-out, so the cube sits comfortably
+    # inside its cell instead of nearly touching the frame edges. Still one
+    # value shared by all three groups -- identical camera for every group.
+    parallel_scale = 0.82 * max(max(rep[g]["vol"].shape) for g in GROUPS)
     raw_paths = {g: TMP / f"raw_{g}.png" for g in GROUPS}
     png_paths = {g: TMP / f"render_{g}.png" for g in GROUPS}
     render_audit = {}
