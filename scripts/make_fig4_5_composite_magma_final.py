@@ -351,32 +351,32 @@ def image_cell(ax, color, lw=CELL_LW):
         sp.set_color(color)
 
 
-def _group_legend_handles(with_markers: bool):
-    """Builds explicit, fully-styled proxy Line2D handles for the three
-    groups (Reference/MicroGen3D/SurVol) up front, matching each group's
-    real plotted style exactly (same LINESTYLES/LINEWIDTHS/MARKERS/COLORS),
-    so the legend swatch is never bolder or thinner than the actual curves.
+# A wider-gapped dash pattern used ONLY for the small legend swatch (never
+# for the actual plotted curves, which keep LINESTYLES["gan"] unchanged):
+# at the short handle length a normal scientific legend uses, the plotted
+# curve's own dash proportions (mostly "on") read as a near-solid bar, so
+# the legend swatch alone gets a pattern with a visibly larger gap.
+LEGEND_DASH_GAN = (0, (3.6, 2.6))
 
-    When a handle also carries a marker (with_markers=True, for panel
-    c-left, whose curves have both a line and a marker), the handle uses
-    TWO x-positions (markers at both ends of the swatch, numpoints=2 at the
-    call site) rather than matplotlib's default single centered marker: a
-    one-marker-in-the-middle handle unreliably renders a custom dash
-    pattern around that marker in this matplotlib version -- the gaps can
-    silently collapse and the swatch reads as a solid bar even though
-    every dash-pattern/linewidth property is set correctly. Two markers
-    with a real multi-segment dashed line between them renders the dashes
-    reliably. Panel b's handles (with_markers=False) have no marker at all,
-    so a single point is fine there."""
+
+def _group_legend_handles(with_markers: bool, use_legend_dash_gan: bool = False):
+    """Builds explicit, fully-styled, single-point (one centered marker,
+    like a normal scientific legend -- never multiple markers or an
+    elongated handle) proxy Line2D handles for the three groups
+    (Reference/MicroGen3D/SurVol), matching each group's real plotted
+    color/linewidth/marker exactly. If use_legend_dash_gan is True,
+    SurVol's legend-swatch linestyle is swapped for LEGEND_DASH_GAN (a
+    wider-gapped pattern than the plotted curve, for a subplot whose short
+    handle+marker combination needs a clearer gap to read as dashed); the
+    actual plotted curves are untouched either way."""
     handles = []
     for g in GROUPS:
-        xdata = [0, 1] if with_markers else [0]
-        ydata = [0, 0] if with_markers else [0]
-        kwargs = dict(color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g])
+        linestyle = LEGEND_DASH_GAN if (use_legend_dash_gan and g == "gan") else LINESTYLES[g]
+        kwargs = dict(color=COLORS[g], linestyle=linestyle, linewidth=LINEWIDTHS[g])
         if with_markers:
             kwargs.update(marker=MARKERS[g], markersize=5.5, markerfacecolor=COLORS[g],
                           markeredgecolor="black", markeredgewidth=0.6)
-        handles.append(Line2D(xdata, ydata, **kwargs))
+        handles.append(Line2D([0], [0], **kwargs))
     return handles, [LABELS[g] for g in GROUPS]
 
 
@@ -1580,14 +1580,12 @@ def plot_interface_fingerprint(ax, panel_metrics):
     # (which metric is lowest/highest) is data-dependent, so a fixed corner
     # can end up sitting on top of a curve (e.g. a near-zero first point);
     # letting matplotlib pick the least-overlapping corner keeps every
-    # curve visible. Explicit proxy handles (see _group_legend_handles) so
-    # SurVol's dashed style is baked in from the start; these handles carry
-    # both a line and a marker, with markers at BOTH ends (numpoints=2) so
-    # the dashed line between them renders reliably -- see
-    # _group_legend_handles for why a single centered marker is avoided.
-    legend_handles, legend_labels = _group_legend_handles(with_markers=True)
+    # curve visible. A normal short handle with ONE centered marker per
+    # entry (see _group_legend_handles) -- like a standard scientific
+    # legend, not an elongated two-marker handle.
+    legend_handles, legend_labels = _group_legend_handles(with_markers=True, use_legend_dash_gan=True)
     leg = ax.legend(legend_handles, legend_labels, loc="best", frameon=True, facecolor="white",
-                    edgecolor=SPINE, framealpha=0.94, handlelength=5.5, numpoints=2,
+                    edgecolor=SPINE, framealpha=0.94, handlelength=2.2,
                     borderpad=0.42, labelspacing=0.36, fontsize=7.0)
     leg.get_frame().set_linewidth(0.6)
 
