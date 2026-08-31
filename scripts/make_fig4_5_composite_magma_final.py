@@ -1043,12 +1043,22 @@ def curve_schema(df: pd.DataFrame) -> dict:
     }
 
 
-def _map_curve_group(v) -> str | None:
-    vn = _norm(v)
-    for g in GROUPS:
-        if vn in {_norm(a) for a in GROUP_KEY_ALIASES[g]}:
-            return g
-    return None
+def map_curve_source_to_group(x) -> str:
+    """Robust source->group mapping for the curve-profiles CSV. The real
+    'source' column values are not the short 'real'/'diffusion'/'gan'
+    tokens used elsewhere (they are full run identifiers such as
+    'diffusion_microgen3d_128_final' or 'survol_nphase_direct128_B_late'),
+    so this matches by keyword rather than exact/alias-set membership.
+    Raises on a genuinely unrecognized source value rather than silently
+    dropping those rows."""
+    s = _norm(str(x))
+    if s in {"realtest", "real", "reference", "ref"} or "real" in s or "reference" in s:
+        return "real"
+    if "diffusion" in s or "microgen3d" in s:
+        return "diffusion"
+    if "survol" in s or s == "gan" or "gan" in s:
+        return "gan"
+    raise RuntimeError(f"[curves] unrecognized curve source value: '{x}'")
 
 
 def _curve_id_composite(id_cols: list, values: tuple) -> str:
@@ -1059,10 +1069,20 @@ def _curve_id_composite(id_cols: list, values: tuple) -> str:
     return _norm("_".join(parts))
 
 
+def match_curve_value(series: pd.Series, value) -> pd.Series:
+    """NaN-safe, format-tolerant equality for a curve-identity column: a
+    NaN target matches only NaN entries; otherwise compares normalized
+    string forms so minor case/formatting differences don't break the
+    match (the underlying value is never altered, only compared)."""
+    if pd.isna(value):
+        return series.isna()
+    return series.astype(str).map(_norm) == _norm(value)
+
+
 def _row_mask_for_curve_id(df: pd.DataFrame, id_cols: list, values: tuple) -> pd.Series:
     mask = pd.Series(True, index=df.index)
     for c, v in zip(id_cols, values):
-        mask &= df[c].isna() if pd.isna(v) else (df[c] == v)
+        mask &= match_curve_value(df[c], v)
     return mask
 
 
@@ -1095,35 +1115,52 @@ def resolve_curve_id(df: pd.DataFrame, sch: dict, aliases: list):
     return None
 
 
+EXPECTED_SAMPLES_PER_CURVE = 50
+
+
 def load_curve_group_data(df: pd.DataFrame, sch: dict, curve_id_values: tuple) -> dict:
     readable = dict(zip(sch["id_cols"], curve_id_values))
     sub = df[_row_mask_for_curve_id(df, sch["id_cols"], curve_id_values)].copy()
     if sub.empty:
         raise RuntimeError(f"[curve] {readable}: no rows matched this curve identity")
-    sub["_group"] = sub[sch["group"]].map(_map_curve_group)
+    sub["_mapped_group"] = sub[sch["group"]].map(map_curve_source_to_group)
     sub["_x"] = pd.to_numeric(sub[sch["x"]], errors="coerce")
     sub["_val"] = pd.to_numeric(sub[sch["value"]], errors="coerce")
     if sub["_x"].isna().any() or sub["_val"].isna().any():
-        raise RuntimeError(f"[curve] {readable}: non-numeric/non-finite x or value entries")
+        raise RuntimeError(f"[curve] {readable}: non-numeric/non-finite r or value entries")
 
     out = {}
     for g in GROUPS:
-        gsub = sub[sub["_group"] == g]
+        gsub = sub[sub["_mapped_group"] == g]
         if gsub.empty:
-            raise RuntimeError(f"[curve] {readable}: group '{g}' has no rows (source column "
-                                f"'{sch['group']}' values: {sorted(sub[sch['group']].astype(str).unique())})")
-        # group by (source, ...id..., r) and aggregate mean/std/count over
-        # the per-sample "value" column, per task instructions.
+            raise RuntimeError(f"[curve] {readable}: mapped group '{g}' has no rows (raw source "
+                                f"values present: {sorted(sub[sch['group']].astype(str).unique())})")
+        # group by (_mapped_group, ...id..., r) and aggregate mean/std/count
+        # over the per-sample "value" column, per task instructions.
         if sch["sample_id"] is not None:
             count = gsub.groupby("_x")[sch["sample_id"]].nunique()
         else:
             count = gsub.groupby("_x")["_val"].count()
         agg = gsub.groupby("_x")["_val"].agg(["mean", "std"])
         agg = agg.join(count.rename("count")).reset_index().sort_values("_x")
-        out[g] = {"x": agg["_x"].to_numpy(float), "y": agg["mean"].to_numpy(float),
-                  "std": agg["std"].to_numpy(float), "count": agg["count"].to_numpy(int)}
-        if not np.all(np.isfinite(out[g]["x"]) & np.isfinite(out[g]["y"])):
-            raise RuntimeError(f"[curve] {readable} group '{g}': non-finite aggregated x/mean values")
+        x = agg["_x"].to_numpy(float)
+        y = agg["mean"].to_numpy(float)
+        std = agg["std"].to_numpy(float)
+        cnt = agg["count"].to_numpy(int)
+        if not np.all(np.isfinite(x) & np.isfinite(y) & np.isfinite(std)):
+            raise RuntimeError(f"[curve] {readable} group '{g}': non-finite aggregated r/mean/std "
+                                f"values (a NaN std usually means a coordinate had only 1 sample)")
+        if not np.all(cnt == cnt[0]):
+            raise RuntimeError(f"[curve] {readable} group '{g}': sample count varies across r "
+                                f"coordinates ({dict(zip(x.tolist(), cnt.tolist()))}) -- stopping "
+                                f"rather than plotting an inconsistently-sampled curve")
+        if cnt[0] != EXPECTED_SAMPLES_PER_CURVE:
+            raise RuntimeError(f"[curve] {readable} group '{g}': {cnt[0]} samples per r-coordinate, "
+                                f"expected exactly {EXPECTED_SAMPLES_PER_CURVE} -- stopping (no "
+                                f"documented reason for a different count)")
+        out[g] = {"x": x, "y": y, "std": std, "count": cnt}
+        log(f"[curves] {readable} group '{g}': {len(x)} r-coordinates, "
+            f"{cnt[0]} samples/coordinate")
 
     ref_x = out["real"]["x"]
     for g in GROUPS:
@@ -1136,6 +1173,22 @@ def load_curve_group_data(df: pd.DataFrame, sch: dict, curve_id_values: tuple) -
 
 def resolve_panel_b_curves(curve_df: pd.DataFrame):
     sch = curve_schema(curve_df)
+
+    # ---- source/group mapping diagnostics (printed before any resolution) --
+    raw_sources = sorted(curve_df[sch["group"]].astype(str).unique())
+    log(f"[curves] unique raw '{sch['group']}' values in {CURVE_PROFILES.name}: {raw_sources}")
+    mapped = curve_df[sch["group"]].map(map_curve_source_to_group)
+    for raw in raw_sources:
+        mapped_to = mapped[curve_df[sch["group"]].astype(str) == raw].iloc[0]
+        log(f"[curves]   '{raw}' -> '{mapped_to}'")
+    for g in GROUPS:
+        gmask = mapped == g
+        n_rows = int(gmask.sum())
+        n_samples = (curve_df.loc[gmask, sch["sample_id"]].nunique()
+                     if sch["sample_id"] is not None else None)
+        log(f"[curves] mapped group '{g}': {n_rows} rows"
+            + (f", {n_samples} distinct sample_id values" if n_samples is not None else ""))
+
     distinct_ids = _distinct_curve_ids(curve_df, sch["id_cols"])
     readable_ids = [dict(zip(sch["id_cols"], v)) for v in distinct_ids]
     log(f"[curves] {len(distinct_ids)} distinct curve identities available in {CURVE_PROFILES.name} "
