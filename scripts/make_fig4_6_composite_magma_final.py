@@ -92,9 +92,9 @@ DUPLICATE_AUDIT = SUITABILITY_DIR / "duplicate_audit.csv"
 NEAREST_WITHIN_GROUP = SUITABILITY_DIR / "nearest_within_group.csv"
 PAIRWISE_DIVERSITY = SUITABILITY_DIR / "pairwise_within_group_diversity.csv"
 
-OUT = PROJECT / "paper_figures_4_6" / "figure_4_6_topology_preservation_final"
+OUT = PROJECT / "paper_figures_4_6" / "figure_4_6_composite_magma_final"
 TMP = OUT / "_render_cache"
-STEM = "fig4_6_topology_preservation_final"
+STEM = "fig4_6_composite_magma_final"
 AUDIT_JSON = OUT / "figure_4_6_audit.json"
 CAPTION_TXT = OUT / "figure_4_6_caption.txt"
 
@@ -111,11 +111,12 @@ FIG_W, FIG_H = 17.8, 10.2
 
 CAPTION_TEXT = (
     "Figure 4.6. Qualitative and descriptor-level comparison for the "
-    "topology-preservation task. (a) Representative orthogonal XY, XZ, and "
-    "YZ slices from real validation samples, PoreGen diffusion outputs, and "
-    "IPWGAN outputs, with the largest connected pore backbone and "
-    "disconnected pore fragments highlighted. (b) Connected-backbone and "
-    "spanning-path descriptors, including largest pore-component fraction, "
+    "topology-preservation task. (a) Representative 3D renderings and "
+    "orthogonal XY, XZ, and YZ slices from real validation samples, PoreGen "
+    "diffusion outputs, and IPWGAN outputs, with the largest connected pore "
+    "backbone and disconnected pore fragments highlighted using the same "
+    "6-connectivity convention as the topology metrics. (b) Connected-backbone "
+    "and spanning-path descriptors, including largest pore-component fraction, "
     "disconnected pore fraction, mean percolating axes, and directional "
     "percolating pore fractions. (c) Pore pair-connectedness curves and "
     "supplementary skeleton/SNOW network descriptors showing preservation "
@@ -426,10 +427,16 @@ def check_pore_fraction(group: str, direct_mean: float):
 
 
 # ============================================================================
-# 6/8. CONNECTED-COMPONENT / PERCOLATION HELPERS (26-connectivity)
+# 6/8. CONNECTED-COMPONENT / PERCOLATION HELPERS (6-connectivity)
+#
+# The official Section 4.6 topology values correspond to 6-connectivity
+# (face-adjacency only), not 26-connectivity -- this must be used for every
+# connected-component, largest-component, disconnected-fraction,
+# percolation, and panel-a topology-overlay calculation, and for the direct
+# sanity checks against the official group metrics.
 # ============================================================================
 
-CONNECTIVITY_STRUCT = ndimage.generate_binary_structure(3, 3)
+CONNECTIVITY_STRUCT = ndimage.generate_binary_structure(3, 1)
 
 
 def label_pore_components(v: np.ndarray):
@@ -915,15 +922,28 @@ def load_advanced_metrics(advanced_dfs: list) -> dict:
 
 
 # ============================================================================
-# 10. PANEL A -- topology-aware representative slices
+# 10. PANEL A -- topology-aware representative slices + 3D backbone render
+#
+# Same overall panel-a grid logic as Figures 4.1/4.2/4.4/4.5: columns are
+# groups (Reference | PoreGen | IPWGAN), rows are {3D volume, X-Y slice,
+# X-Z slice, Y-Z slice}. The 3D row is a true marching-cubes isosurface of
+# the largest connected pore component (6-connectivity, same convention as
+# every other topology computation in this script) rendered from the
+# actual selected NPY volume -- never a MIP, never synthetic geometry. The
+# 2D rows are topology-class overlays (solid / largest connected pore
+# backbone / disconnected pore fragments), not plain binary slices.
 # ============================================================================
 
 PLANES = ["XY", "XZ", "YZ"]
+ROW_NAMES = ["3D volume", "X–Y slice", "X–Z slice", "Y–Z slice"]
 PLANE_DIRECTION_LABELS = {
     "XY": [("→ X", (0.90, 0.07), "right", "bottom"), ("↑ Y", (0.07, 0.90), "left", "top")],
     "XZ": [("→ X", (0.90, 0.07), "right", "bottom"), ("↑ Z", (0.07, 0.90), "left", "top")],
     "YZ": [("→ Y", (0.90, 0.07), "right", "bottom"), ("↑ Z", (0.07, 0.90), "left", "top")],
 }
+
+RENDER_PX = 1500
+CANVAS_PX = 900
 
 
 def _class_image(v: np.ndarray, labeled: np.ndarray, largest_id, plane: str, index: int) -> np.ndarray:
@@ -941,63 +961,148 @@ def _class_image(v: np.ndarray, labeled: np.ndarray, largest_id, plane: str, ind
     return cls
 
 
-def build_panel_a(fig, card, rep_data):
+def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw: Path,
+                             parallel_scale: float) -> dict:
+    """True marching-cubes isosurface of the largest connected pore
+    component (6-connectivity), rendered from the actual selected NPY
+    volume. Identical camera, extent, and parallel scale across all three
+    groups (no content-dependent cropping) for a fair comparison. No MIP
+    fallback: if PyVista + scikit-image marching_cubes cannot run, this
+    raises and the caller refuses to save the figure."""
+    import pyvista as pv
+    from skimage import measure
+
+    try:
+        pv.start_xvfb(wait=0.2)
+    except Exception:
+        pass
+
+    nz, ny, nx = labeled.shape
+    center = np.array([nz / 2.0, ny / 2.0, nx / 2.0])
+    mask = (labeled == largest_id).astype(np.float32)
+    if mask.min() >= 0.5 or mask.max() <= 0.5:
+        raise RuntimeError(f"[render:{group}] largest connected pore component has a degenerate "
+                            f"iso-level (absent or filling the whole volume) -- refusing to render "
+                            f"an empty/solid cell")
+
+    verts, faces, _, _ = measure.marching_cubes(mask, level=0.5)
+    faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
+    mesh = pv.PolyData(verts, faces_pv)
+
+    pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
+    pl.set_background("white")
+    pl.add_mesh(mesh, color=LARGEST_COMPONENT_COLOR, opacity=1.0, smooth_shading=True,
+                specular=0.24, specular_power=20, ambient=0.30, diffuse=0.80, show_scalar_bar=False)
+    # Full [0,nz]x[0,ny]x[0,nx] cube wireframe -- identical extent for every
+    # group regardless of data content, so the rendered scale is fair by
+    # construction rather than by post-hoc cropping (same convention as
+    # Figures 4.1/4.2/4.4/4.5).
+    pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
+                color=COLORS[group], line_width=2.2, opacity=0.60)
+
+    pl.enable_parallel_projection()
+    direction = np.array([1.0, -1.30, 0.90])
+    direction /= np.linalg.norm(direction)
+    pl.camera.focal_point = tuple(center)
+    pl.camera.position = tuple(center + direction * 4.0 * max(labeled.shape))
+    pl.camera.up = (0.0, 0.0, 1.0)
+    pl.camera.parallel_scale = float(parallel_scale)
+
+    pl.screenshot(str(out_raw), transparent_background=True)
+    pl.close()
+
+    return {"render_extent": [[0, nz], [0, ny], [0, nx]], "parallel_scale": float(parallel_scale),
+            "connectivity": "6-connectivity (face-adjacency), generate_binary_structure(3, 1)"}
+
+
+def render_group_backbone(labeled, largest_id, group: str, out_raw: Path, parallel_scale: float) -> dict:
+    try:
+        return render_backbone_surface(labeled, largest_id, group, out_raw, parallel_scale)
+    except Exception as exc:
+        raise RuntimeError(
+            f"[render:{group}] 3D connected pore-backbone rendering failed and no fallback is "
+            f"permitted for this figure (PyVista + scikit-image marching_cubes are required; "
+            f"PyVista/scikit-image rendering appears unavailable in this environment): {exc}"
+        ) from exc
+
+
+def finalize_renders(raw_paths: dict, out_paths: dict):
+    """Identical, content-independent resize for every group -- NO alpha
+    bounding-box crop, NO per-group foreground zoom. The camera, parallel
+    scale, and full [0,128]^3 wireframe cube are already identical across
+    groups, so a plain uniform resize is the fair operation."""
+    rs = _resample()
+    for g, raw_path in raw_paths.items():
+        im = Image.open(raw_path).convert("RGBA")
+        canvas = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        canvas.alpha_composite(im)
+        canvas = canvas.resize((CANVAS_PX, CANVAS_PX), rs)
+        canvas.convert("RGB").save(out_paths[g])
+
+
+def _resample():
+    try:
+        return Image.Resampling.LANCZOS
+    except AttributeError:
+        return Image.LANCZOS
+
+
+def build_panel_a(fig, card, rep_data, png_paths):
     ax_, ay_, aw_, ah_ = card
-    pad_x, pad_top, pad_bot = 0.016, 0.040, 0.056
-    label_w, gap_x, gap_y = 0.058, 0.016, 0.010
+    pad_x, pad_top, pad_bot = 0.016, 0.038, 0.056
+    label_w, gap_x, gap_y = 0.062, 0.018, 0.009
 
     free_w_in = (aw_ - 2 * pad_x - label_w - 2 * gap_x) * FIG_W / 3.0
-    free_h_in = (ah_ - pad_top - pad_bot - 2 * gap_y) * FIG_H / 3.0
+    free_h_in = (ah_ - pad_top - pad_bot - 3 * gap_y) * FIG_H / 4.0
     cell_in = min(free_w_in, free_h_in)
     cell_w, cell_h = cell_in / FIG_W, cell_in / FIG_H
 
-    grid_w = label_w + 2 * gap_x + 3 * cell_w
-    grid_h = 3 * cell_h + 2 * gap_y
+    grid_w = label_w + 3 * gap_x + 3 * cell_w
+    grid_h = 4 * cell_h + 3 * gap_y
     gx0 = ax_ + (aw_ - grid_w) / 2.0
     gy_top = ay_ + ah_ - pad_top - max(0.0, (ah_ - pad_top - pad_bot - grid_h) / 2.0)
 
     def row_y(r):
         return gy_top - (r + 1) * cell_h - r * gap_y
 
-    # column headers (plane names) once at the top -- neutral color, not model-colored
-    for c, plane in enumerate(PLANES):
-        x = gx0 + label_w + gap_x + c * (cell_w + gap_x)
-        fig.text(x + cell_w / 2.0, gy_top + 0.010, plane, ha="center", va="bottom",
-                 fontsize=9.6, fontweight="bold", color=TEXT)
-
-    for r, g in enumerate(GROUPS):
+    for r, name in enumerate(ROW_NAMES):
         a = fig.add_axes([gx0, row_y(r), label_w, cell_h])
         a.axis("off")
-        a.text(0.98, 0.5, LABELS[g], ha="right", va="center", fontsize=9.0,
-               fontweight="bold", color=TITLE_COLOR[g])
+        a.text(0.98, 0.5, name, ha="right", va="center", fontsize=8.6, fontweight="bold", color=TEXT)
+
+    for c, g in enumerate(GROUPS):
+        x = gx0 + label_w + gap_x + c * (cell_w + gap_x)
+        fig.text(x + cell_w / 2.0, gy_top + 0.010, LABELS[g], ha="center", va="bottom",
+                 fontsize=9.6, fontweight="bold", color=TITLE_COLOR[g])
 
         rd = rep_data[g]
-        for c, plane in enumerate(PLANES):
-            x = gx0 + label_w + gap_x + c * (cell_w + gap_x)
-            a = fig.add_axes([x, row_y(r), cell_w, cell_h])
+
+        a = fig.add_axes([x, row_y(0), cell_w, cell_h])
+        a.imshow(Image.open(png_paths[g]), interpolation="bilinear")
+        image_cell(a, COLORS[g])
+        # Three short stacked lines rather than one long line: even a
+        # two-line version was still too wide for the cell and got clipped
+        # mid-value (e.g. "LCF=0.9" instead of "LCF=0.92").
+        chip = f"φ={rd['pore_fraction']:.2f}\nLCF={rd['largest_component_fraction']:.2f}\ndisc={rd['disconnected_fraction']:.2f}"
+        a.text(0.035, 0.035, chip, transform=a.transAxes, fontsize=6.2, color=SUBTEXT,
+               ha="left", va="bottom", linespacing=1.4, clip_on=True,
+               bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.3))
+
+        for ri, plane in enumerate(PLANES):
+            a = fig.add_axes([x, row_y(ri + 1), cell_w, cell_h])
             idx = rd["slice_index"][plane]
             cls_img = _class_image(rd["vol"], rd["labeled"], rd["largest_id"], plane, idx)
             a.imshow(cls_img, cmap=TOPO_CMAP, vmin=0, vmax=2, origin="lower",
                      interpolation="nearest", aspect="equal", extent=(0, 128, 0, 128))
             image_cell(a, COLORS[g])
             if c == 0:
-                # Top-right corner: the top-left corner carries the "up"
-                # direction label and the bottom-right corner carries the
-                # "across" direction label (see PLANE_DIRECTION_LABELS), so
-                # this is the only corner free of any other annotation.
-                # Two short lines rather than one long one so it never runs
-                # into either neighboring label.
-                chip = f"φ={rd['pore_fraction']:.2f}\nLCF={rd['largest_component_fraction']:.2f}  disc={rd['disconnected_fraction']:.2f}"
-                a.text(0.96, 0.95, chip, transform=a.transAxes, fontsize=5.6, color=SUBTEXT,
-                       ha="right", va="top", linespacing=1.5,
-                       bbox=dict(facecolor="white", edgecolor="none", alpha=0.72, pad=0.9))
-            for txt, (tx, ty), ha, va in PLANE_DIRECTION_LABELS[plane]:
-                a.text(tx, ty, txt, transform=a.transAxes, fontsize=6.5, fontweight="bold",
-                       color="white", ha=ha, va=va,
-                       bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.0))
+                for txt, (tx, ty), ha, va in PLANE_DIRECTION_LABELS[plane]:
+                    a.text(tx, ty, txt, transform=a.transAxes, fontsize=6.9, fontweight="bold",
+                           color="white", ha=ha, va=va,
+                           bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.2))
 
     # compact topology-class legend, centered under the grid
-    legend_y = ay_ + 0.020
+    legend_y = ay_ + 0.015
     swatch_colors = [SOLID_COLOR, LARGEST_COMPONENT_COLOR, DISCONNECTED_FRAGMENT_COLOR]
     item_widths = [0.052, 0.150, 0.145]
     total_w = sum(item_widths)
@@ -1007,7 +1112,7 @@ def build_panel_a(fig, card, rep_data):
                                   transform=fig.transFigure, facecolor=color,
                                   edgecolor=SPINE, linewidth=0.6, zorder=101))
         fig.text(lx + 0.019, legend_y, name, ha="left", va="center",
-                 fontsize=6.8, color=SUBTEXT, zorder=101)
+                 fontsize=7.2, color=SUBTEXT, zorder=101)
         lx += w
 
 
@@ -1296,6 +1401,20 @@ def main():
             "slice_index": slice_index, "slice_info": slice_info,
         }
 
+    # ---- panel a: 3D connected pore-backbone renders (fixed, fair protocol) ---
+    parallel_scale = 0.82 * max(max(rep_data[g]["vol"].shape) for g in GROUPS)
+    raw_paths = {g: TMP / f"raw_{g}.png" for g in GROUPS}
+    png_paths = {g: TMP / f"render_{g}.png" for g in GROUPS}
+    render_audit = {}
+    for g in GROUPS:
+        render_audit[g] = render_group_backbone(rep_data[g]["labeled"], rep_data[g]["largest_id"],
+                                                 g, raw_paths[g], parallel_scale)
+        log(f"[panel-a-audit:{g}] render_extent={render_audit[g]['render_extent']}  "
+            f"parallel_scale={render_audit[g]['parallel_scale']:.4f}  "
+            f"connectivity='{render_audit[g]['connectivity']}'")
+    finalize_renders(raw_paths, png_paths)
+    log("Panel a crop/zoom used: none")
+
     # ---- panel b: official scalar metrics -----------------------------------
     scalar_dfs = []
     for path in (GROUP_SCALAR_SUMMARY, DESCRIPTOR_ERRORS, ONE_FILE_DESCRIPTOR_ERRORS):
@@ -1331,7 +1450,7 @@ def main():
     add_panel_label(fig, card_b[0] + 0.007, card_b[1] + card_b[3] + PANEL_LABEL_OFFSET, "b)")
     add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + PANEL_LABEL_OFFSET, "c)")
 
-    build_panel_a(fig, card_a, rep_data)
+    build_panel_a(fig, card_a, rep_data, png_paths)
     build_panel_b(fig, card_b, panel_b_metrics)
     build_panel_c(fig, card_c, curve_data, rmse_data, advanced_metrics)
 
@@ -1353,6 +1472,8 @@ def main():
         "project": str(PROJECT),
         "volume_dirs": {g: str(GROUP_VOLUME_DIRS[g]) for g in GROUPS},
         "forbidden_dirs_checked": [str(p) for p in FORBIDDEN_DIRS],
+        "connectivity": "6-connectivity (face-adjacency), generate_binary_structure(3, 1)",
+        "panel_a_render_audit": render_audit,
         "representative": {
             g: {
                 "file": rep_data[g]["file"].name,
