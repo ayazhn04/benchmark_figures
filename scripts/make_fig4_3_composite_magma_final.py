@@ -160,6 +160,18 @@ TITLE_COLOR = {"lr": SUBTEXT, "hr": TEXT, "bicubic": BICUBIC_COLOR,
 CARD_LW = 0.8
 CELL_LW = 1.6
 
+# Panels d/e read small in a journal-width reduction, so their type is
+# scaled up ~12% relative to the shared rcParams baseline (which panels
+# a/b/c still use unchanged). Local overrides only -- the shared rcParams
+# block above is untouched so a/b/c and Figures 4.1/4.2 are unaffected.
+DE_FONT_SCALE = 1.12
+DE_TITLE_FS = round(8.6 * DE_FONT_SCALE, 1)
+DE_LABEL_FS = round(7.6 * DE_FONT_SCALE, 1)
+DE_TICK_FS = round(6.8 * DE_FONT_SCALE, 1)
+DE_LEGEND_FS = round(6.9 * DE_FONT_SCALE, 1)
+DE_METHOD_LABEL_FS = round(7.2 * DE_FONT_SCALE, 1)
+DE_VALUE_LABEL_FS = round(6.6 * DE_FONT_SCALE, 1)
+
 PANEL_A_COLS = ["lr", "hr", "bicubic", "resshift", "survol"]
 PANEL_B_COLS = ["lr", "hr", "bicubic", "resshift", "survol"]
 PANEL_C_COLS = ["bicubic", "resshift", "survol"]
@@ -684,10 +696,12 @@ def choose_roi(hr_binary: np.ndarray):
 # ============================================================================
 
 
-def draw_image_strip(fig, card, cols, images_full, titles_on_top, roi=None):
+def draw_image_strip(fig, card, cols, images_full, titles_on_top, roi=None,
+                      pad_x=0.014, pad_top=None, pad_bot=0.014, gap_x=0.014,
+                      roi_linewidth=1.3):
     x_, y_, w_, h_ = card
-    pad_x, pad_top, pad_bot = 0.014, 0.034 if titles_on_top else 0.016, 0.014
-    gap_x = 0.014
+    if pad_top is None:
+        pad_top = 0.034 if titles_on_top else 0.016
     n = len(cols)
 
     free_w_in = (w_ - 2 * pad_x - (n - 1) * gap_x) * FIG_W / n
@@ -716,7 +730,7 @@ def draw_image_strip(fig, card, cols, images_full, titles_on_top, roi=None):
         if roi is not None and key == "hr":
             x0, y0, rw, rh, _ = roi
             a.add_patch(Rectangle((x0, y0), rw, rh, fill=False,
-                                   edgecolor=TEXT, linewidth=1.3, zorder=10))
+                                   edgecolor=TEXT, linewidth=roi_linewidth, zorder=10))
     return axes
 
 
@@ -764,15 +778,12 @@ def draw_phase_error_maps(fig, card, cols, hr_binary_roi, pred_binary_by_key):
                fontsize=6.4, color=TEXT, ha="left", va="bottom",
                bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.4))
 
+    # Plain-text legend rather than a single colored swatch, which would
+    # misleadingly imply every method's mismatch pixels share one color
+    # (each map actually uses that column's own method color).
     legend_y = y_ + h_ - 0.014
-    fig.add_artist(Rectangle((gx0, legend_y - 0.006), 0.011, 0.010, transform=fig.transFigure,
-                              facecolor="#F3F0F8", edgecolor=SPINE, linewidth=0.6, zorder=101))
-    fig.text(gx0 + 0.016, legend_y, "correct phase", ha="left", va="center",
-             fontsize=6.6, color=SUBTEXT, zorder=101)
-    fig.add_artist(Rectangle((gx0 + 0.105, legend_y - 0.006), 0.011, 0.010, transform=fig.transFigure,
-                              facecolor=SUBTEXT, edgecolor=SPINE, linewidth=0.6, zorder=101))
-    fig.text(gx0 + 0.121, legend_y, "phase mismatch (method color)", ha="left", va="center",
-             fontsize=6.6, color=SUBTEXT, zorder=101)
+    fig.text(gx0, legend_y, "light = correct phase   ·   colored = mismatch (per-method color)",
+             ha="left", va="center", fontsize=6.8, color=SUBTEXT, zorder=101)
 
 
 # ============================================================================
@@ -785,6 +796,18 @@ BAR_METRIC_SPECS = [
     ("phase_fraction_error", "Phase-fraction error ↓", "sci"),
     ("interface_density_error", "Interface-density error ↓", "sci"),
 ]
+
+
+def format_bar_value(metric: str, v: float) -> str:
+    """Concise value-label text per metric; formatting only, never touches
+    the underlying value plotted or its normalization."""
+    if metric == "psnr":
+        return f"{v:.2f}"
+    if metric == "ssim":
+        return f"{v:.3f}"
+    # phase_fraction_error / interface_density_error: compact scientific,
+    # 4 significant digits.
+    return f"{v:.3e}"
 
 
 def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
@@ -810,7 +833,8 @@ def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
         style_axis(ax, grid=False)
         ax.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
         ax.set_axisbelow(True)
-        ax.set_title(title, pad=4.0, color=TEXT, fontweight="bold")
+        ax.set_title(title, pad=4.0, color=TEXT, fontweight="bold", fontsize=DE_TITLE_FS)
+        ax.tick_params(axis="y", labelsize=DE_TICK_FS)
 
         col = resolved_cols.get(metric)
         if col is None:
@@ -835,10 +859,19 @@ def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
                edgecolor="black", linewidth=0.7,
                error_kw=dict(ecolor=TEXT, elinewidth=1.0, capsize=2.5))
         ax.set_xticks(xs)
-        ax.set_xticklabels([LABELS[m] for m in BAR_METHODS], fontsize=7.2)
+        ax.set_xticklabels([LABELS[m] for m in BAR_METHODS], fontsize=DE_METHOD_LABEL_FS)
         if fmt == "sci":
             ax.ticklabel_format(axis="y", style="scientific", scilimits=(-2, 2))
-        ax.margins(y=0.18)
+            ax.yaxis.get_offset_text().set_fontsize(DE_TICK_FS)
+        # Headroom for the value labels drawn above each bar+error-bar.
+        ax.margins(y=0.30)
+
+        for xi, v, e in zip(xs, vals, errs):
+            if np.isnan(v):
+                continue
+            ax.text(xi, v + e, format_bar_value(metric, v), ha="center", va="bottom",
+                    fontsize=DE_VALUE_LABEL_FS, color=TEXT,
+                    transform=ax.transData)
 
 
 # ============================================================================
@@ -846,31 +879,69 @@ def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
 # ============================================================================
 
 
-def plot_curve_group(ax, curves, title, xlabel, ylabel):
+def plot_curve_group(ax, curves, title, xlabel, ylabel, use_log_y=False, inset_frac=0.12):
+    """use_log_y only changes how the curves already in `curves` are
+    displayed (log y-axis, with nonpositive points masked from the plotted
+    line only) -- it never modifies the underlying data. If a log axis
+    isn't safe (too many nonpositive samples across the group), falls back
+    to linear scale plus a small low-frequency inset instead."""
     style_axis(ax)
-    ax.set_title(title, pad=4.5, color=TEXT, fontweight="bold")
-    ax.set_xlabel(xlabel, color=SUBTEXT)
-    ax.set_ylabel(ylabel, color=SUBTEXT)
+    ax.set_title(title, pad=4.5, color=TEXT, fontweight="bold", fontsize=DE_TITLE_FS)
+    ax.set_xlabel(xlabel, color=SUBTEXT, fontsize=DE_LABEL_FS)
+    ax.set_ylabel(ylabel, color=SUBTEXT, fontsize=DE_LABEL_FS)
+    ax.tick_params(axis="both", which="major", labelsize=DE_TICK_FS)
 
     if curves is None:
         ax.text(0.5, 0.5, "metric unavailable\n(no matching evaluator function)",
                 transform=ax.transAxes, ha="center", va="center", fontsize=7.2, color=SUBTEXT)
         return
 
-    for key in ["hr", "bicubic", "resshift", "survol"]:
-        if key not in curves:
-            continue
+    keys = [k for k in ("hr", "bicubic", "resshift", "survol") if k in curves]
+
+    log_ok = False
+    if use_log_y:
+        all_y = np.concatenate([curves[k]["y"] for k in keys]) if keys else np.array([])
+        finite = all_y[np.isfinite(all_y)]
+        log_ok = finite.size > 0 and np.mean(finite > 0) >= 0.8
+
+    for key in keys:
         x, y, std = curves[key]["x"], curves[key]["y"], curves[key].get("std")
+        y_plot = np.where(y > 0, y, np.nan) if log_ok else y
         if key == "hr" and std is not None and np.any(std > 0):
-            ax.fill_between(x, y - std, y + std, color=COLORS[key], alpha=0.20, linewidth=0, zorder=1)
-        ax.plot(x, y, color=COLORS[key], linestyle=LINESTYLES[key], linewidth=LINEWIDTHS[key],
+            lo, hi = y - std, y + std
+            if log_ok:
+                lo = np.where(lo > 0, lo, np.nan)
+                hi = np.where(hi > 0, hi, np.nan)
+            ax.fill_between(x, lo, hi, color=COLORS[key], alpha=0.20, linewidth=0, zorder=1)
+        ax.plot(x, y_plot, color=COLORS[key], linestyle=LINESTYLES[key], linewidth=LINEWIDTHS[key],
                  solid_capstyle="round", label=LABELS[key], zorder=3 if key == "hr" else 4)
 
     ax.margins(x=0.02, y=0.06)
+    if log_ok:
+        ax.set_yscale("log")
+
     leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
-                     framealpha=0.94, handlelength=2.3, borderpad=0.45, labelspacing=0.3)
+                     framealpha=0.94, handlelength=2.3, borderpad=0.45, labelspacing=0.3,
+                     fontsize=DE_LEGEND_FS)
     leg.get_frame().set_linewidth(0.6)
     leg.set_zorder(8)
+
+    if use_log_y and not log_ok and keys:
+        # Linear-scale fallback: a clean low-frequency inset instead of a
+        # log axis, since too many nonpositive samples make log unsafe.
+        n_bins = len(curves[keys[0]]["x"])
+        cutoff = max(2, int(round(n_bins * inset_frac)))
+        axins = ax.inset_axes([0.46, 0.42, 0.50, 0.50])
+        for key in keys:
+            x, y = curves[key]["x"], curves[key]["y"]
+            axins.plot(x[:cutoff], y[:cutoff], color=COLORS[key], linestyle=LINESTYLES[key],
+                       linewidth=LINEWIDTHS[key] * 0.85, solid_capstyle="round", zorder=4)
+        axins.set_facecolor("white")
+        for sp in axins.spines.values():
+            sp.set_color(SPINE)
+            sp.set_linewidth(0.6)
+        axins.tick_params(colors=SUBTEXT, labelcolor=SUBTEXT, labelsize=DE_TICK_FS * 0.85)
+        axins.set_title("low-frequency zoom", fontsize=DE_TICK_FS * 0.9, color=SUBTEXT, pad=2.0)
 
 
 def compute_group_curves(evaluator, grays_by_key):
@@ -990,7 +1061,11 @@ def main():
     add_panel_label(fig, card_d[0] + 0.007, card_d[1] + card_d[3] + PANEL_LABEL_OFFSET, "d)")
     add_panel_label(fig, card_e[0] + 0.007, card_e[1] + card_e[3] + PANEL_LABEL_OFFSET, "e)")
 
-    draw_image_strip(fig, card_a, PANEL_A_COLS, images_full, titles_on_top=True, roi=roi)
+    # Panel a gets tighter (but still title-safe) padding than panel b's
+    # defaults, reclaiming unused space so its cells render ~9% larger;
+    # panel b is untouched. The ROI box is also drawn a bit thicker here.
+    draw_image_strip(fig, card_a, PANEL_A_COLS, images_full, titles_on_top=True, roi=roi,
+                      pad_top=0.024, pad_bot=0.007, gap_x=0.011, roi_linewidth=1.9)
     draw_image_strip(fig, card_b, PANEL_B_COLS, images_roi, titles_on_top=True, roi=None)
     draw_phase_error_maps(fig, card_c, PANEL_C_COLS, hr_binary_roi, pred_binary_roi)
     plot_metric_bars(fig, card_d, main_df, resolved_cols, method_col)
@@ -1002,7 +1077,7 @@ def main():
     ax_tpcf = fig.add_axes([ex_ + e_pl, ey_ + e_pb, e_plot_w, e_plot_h])
     ax_psd = fig.add_axes([ex_ + e_pl + e_plot_w + e_gx, ey_ + e_pb, e_plot_w, e_plot_h])
     plot_curve_group(ax_tpcf, tpcf_curves, "Radial TPCF", "Lag / radius (pixels)", r"$S_2(r)$")
-    plot_curve_group(ax_psd, psd_curves, "Radial PSD", "Radial frequency bin", "Power")
+    plot_curve_group(ax_psd, psd_curves, "Radial PSD", "Radial frequency bin", "Power", use_log_y=True)
 
     # =========================== PRE-SAVE CONFIRMATION =======================
     log("\nHR = 50")
