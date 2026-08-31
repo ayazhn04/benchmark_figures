@@ -10,18 +10,18 @@ make_fig4_2_composite_magma_final.py): same cards, fonts, panel-label style,
 export block. No tight_layout / constrained_layout / bbox_inches.
 
 Unlike 4.1/4.2, this script never reimplements the official evaluator's
-phase-threshold, bicubic, radial-TPCF, or radial-PSD logic from a guess --
-it dynamically imports section43_full_metrics_2d.py itself and calls its
-actual functions, so panels b/c/e are built from the exact official
-definitions rather than an approximation of them. If those functions can't
-be identified unambiguously, the affected panel is refused rather than
-faked (see EVALUATOR_OVERRIDES below for a manual escape hatch).
+phase-threshold, bicubic, or radial-TPCF/PSD logic from a guess -- it
+dynamically imports section43_full_metrics_2d.py itself and calls its
+confirmed real functions by their exact names (threshold_phase, resize_to,
+curve_descriptors), so panels b/c/e are built from the exact official
+definitions rather than an approximation of them. If the module is missing
+one of those functions, or curve_descriptors doesn't return the expected
+keys, the script stops rather than faking a substitute.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import re
 import sys
 import warnings
@@ -70,22 +70,16 @@ EXPECTED_HR_SIZE = (800, 800)
 EXPECTED_LR_SIZE = (200, 200)
 EXPECTED_N = 50
 
-PHASE_THRESHOLD = 128   # per task spec; the >= vs > direction is resolved by
-MAX_LAG = 256           # calling the evaluator's own function, never guessed.
+# Confirmed official convention (section43_full_metrics_2d.py):
+#   threshold_phase(arr, thr=128.0) -> arr >= thr
+#   resize_to(arr, size_hw, resample=Image.BICUBIC)
+#   curve_descriptors(gray, threshold, max_lag) -> dict incl.
+#     "tpcf_radial_phase1", "psd_radial_phase1"
+PHASE_THRESHOLD = 128.0
+MAX_LAG = 256
 
 ROI_SIZE = 192          # HR-grid pixels (= 48 LR pixels at x4)
 ROI_STRIDE = 16
-
-# Manual override escape hatch: if evaluator-function auto-detection finds
-# more than one candidate (or the wrong one), fill these in with the exact
-# names printed under "[evaluator] found function: ..." and re-run. Left as
-# None, auto-detection is used and must be unambiguous.
-EVALUATOR_OVERRIDES = {
-    "threshold": None,   # e.g. "binarize_phase"
-    "bicubic": None,     # e.g. "bicubic_upsample"
-    "tpcf": None,        # e.g. "tpcf_radial_phase1"
-    "psd": None,         # e.g. "psd_radial_phase1"
-}
 
 FIG_W, FIG_H = 17.8, 10.2
 
@@ -254,9 +248,10 @@ def pick_row(df: pd.DataFrame, method_col: str, method_key: str):
 
 
 # ============================================================================
-# 5. EVALUATOR INTROSPECTION -- dynamically import the real
-# section43_full_metrics_2d.py and reuse its actual functions instead of
-# reimplementing a guess of its threshold/bicubic/TPCF/PSD conventions.
+# 5. EVALUATOR -- dynamically import the real section43_full_metrics_2d.py
+# and call its confirmed functions by their exact names. No name-keyword
+# guessing: threshold_phase, resize_to, and curve_descriptors are the real
+# official functions, used exactly as the evaluator itself uses them.
 # ============================================================================
 
 
@@ -265,7 +260,7 @@ def load_evaluator_module():
         raise FileNotFoundError(
             f"Official evaluator not found: {EVALUATOR_PATH}\n"
             f"This script requires the real evaluator to reuse its exact "
-            f"phase-threshold, bicubic, TPCF and PSD conventions -- it does "
+            f"phase-threshold, bicubic, and TPCF/PSD conventions -- it does "
             f"not reimplement a guess of them."
         )
     spec = importlib.util.spec_from_file_location("section43_full_metrics_2d", str(EVALUATOR_PATH))
@@ -275,170 +270,49 @@ def load_evaluator_module():
     return mod
 
 
-def _module_functions(mod):
-    return {name: fn for name, fn in inspect.getmembers(mod, inspect.isfunction)
-            if fn.__module__ == mod.__name__}
-
-
-def _find_candidates(funcs, keywords, exclude=()):
-    out = []
-    for name, fn in funcs.items():
-        ln = _norm(name)
-        if any(k in ln for k in keywords) and not any(e in ln for e in exclude):
-            out.append((name, fn))
-    return out
-
-
-def _resolve_function(funcs, capability, keywords, exclude=()):
-    override = EVALUATOR_OVERRIDES.get(capability)
-    if override:
-        if override not in funcs:
-            raise RuntimeError(f"[evaluator] EVALUATOR_OVERRIDES['{capability}'] = '{override}' "
-                                f"is not a function in {EVALUATOR_PATH.name}")
-        log(f"[evaluator] {capability}: using manual override '{override}'")
-        return funcs[override]
-
-    cands = _find_candidates(funcs, keywords, exclude)
-    if len(cands) == 1:
-        name, fn = cands[0]
-        log(f"[evaluator] {capability}: auto-resolved to '{name}'")
-        return fn
-    if len(cands) == 0:
-        return None
-    names = [n for n, _ in cands]
-    raise RuntimeError(
-        f"[evaluator] {capability}: {len(cands)} ambiguous candidates found: {names}\n"
-        f"Set EVALUATOR_OVERRIDES['{capability}'] to the correct one and re-run."
-    )
-
-
-def _try_calls(fn, variants, sanity_check, what):
-    """Try several (args, kwargs) call signatures against fn until one both
-    succeeds and passes sanity_check(result); log which one worked."""
-    errors = []
-    for args, kwargs in variants:
-        try:
-            result = fn(*args, **kwargs)
-            if sanity_check(result):
-                return result
-            errors.append(f"args={args} kwargs={kwargs} -> failed sanity check")
-        except Exception as exc:
-            errors.append(f"args={args} kwargs={kwargs} -> {type(exc).__name__}: {exc}")
-    raise RuntimeError(
-        f"[evaluator] could not call '{fn.__name__}' for {what} with any known signature:\n  "
-        + "\n  ".join(errors)
-    )
-
-
 class Evaluator:
-    """Thin adaptive wrapper around the real evaluator module's functions."""
+    """Thin wrapper around the real, confirmed official evaluator functions:
+    threshold_phase(arr, thr=128.0) -> arr >= thr
+    resize_to(arr, size_hw, resample=Image.BICUBIC)
+    curve_descriptors(gray, threshold, max_lag) -> dict with
+        "tpcf_radial_phase1" / "psd_radial_phase1"
+    """
+
+    REQUIRED_FUNCS = ("threshold_phase", "resize_to", "curve_descriptors")
 
     def __init__(self, mod):
         self.mod = mod
-        funcs = _module_functions(mod)
-        log(f"[evaluator] {len(funcs)} module-level functions found in {EVALUATOR_PATH.name}:")
-        for name, fn in funcs.items():
-            try:
-                sig = str(inspect.signature(fn))
-            except (TypeError, ValueError):
-                sig = "(?)"
-            log(f"[evaluator]   {name}{sig}")
-
-        self.threshold_fn = _resolve_function(
-            funcs, "threshold",
-            keywords=["threshold", "binariz", "binaris", "tophase", "phasemap", "getphase", "phase1"])
-        self.bicubic_fn = _resolve_function(funcs, "bicubic", keywords=["bicubic"])
-        self.tpcf_fn = _resolve_function(
-            funcs, "tpcf", keywords=["tpcf", "twopoint", "s2radial", "radialtpcf", "tpc"])
-        self.psd_fn = _resolve_function(
-            funcs, "psd", keywords=["psd", "powerspectrum", "radialpsd", "spectraldensity"])
-
-        if self.threshold_fn is None:
+        missing = [name for name in self.REQUIRED_FUNCS if not hasattr(mod, name)]
+        if missing:
             raise RuntimeError(
-                "[evaluator] no phase-threshold/binarization function could be found. "
-                "This script refuses to guess the >=128 vs >128 convention -- set "
-                "EVALUATOR_OVERRIDES['threshold'] to the correct function name."
+                f"[evaluator] {EVALUATOR_PATH.name} is missing required function(s) {missing}. "
+                f"Refusing to guess a substitute for the official convention."
             )
-        if self.bicubic_fn is None:
-            raise RuntimeError(
-                "[evaluator] no bicubic-upsampling function could be found. Set "
-                "EVALUATOR_OVERRIDES['bicubic'] to the correct function name."
-            )
-        if self.tpcf_fn is None:
-            log("[evaluator] WARNING: no radial-TPCF function found -> panel e TPCF will show "
-                "'metric unavailable' rather than a fabricated curve.")
-        if self.psd_fn is None:
-            log("[evaluator] WARNING: no radial-PSD function found -> panel e PSD will show "
-                "'metric unavailable' rather than a fabricated curve.")
+        log("[evaluator] official phase convention: phase1 = grayscale >= 128")
+        log("[evaluator] official bicubic: resize_to(..., resample=Image.BICUBIC)")
 
     def binarize(self, gray: np.ndarray) -> np.ndarray:
-        def ok(r):
-            a = np.asarray(r)
-            return a.shape == gray.shape and a.size > 0
-        variants = [
-            ((gray,), {}),
-            ((gray,), {"threshold": PHASE_THRESHOLD}),
-            ((gray, PHASE_THRESHOLD), {}),
-        ]
-        r = _try_calls(self.threshold_fn, variants, ok, "phase binarization")
-        return np.asarray(r).astype(bool)
+        return np.asarray(self.mod.threshold_phase(gray, PHASE_THRESHOLD)).astype(bool)
 
-    def bicubic(self, lr_gray: np.ndarray, out_size=EXPECTED_HR_SIZE) -> np.ndarray:
-        def ok(r):
-            a = np.asarray(r)
-            return a.ndim == 2 and a.shape[0] >= out_size[0] * 0.9
+    def bicubic(self, lr_gray: np.ndarray, out_size) -> np.ndarray:
+        return np.asarray(self.mod.resize_to(lr_gray, out_size, resample=Image.BICUBIC))
 
-        variants = [
-            ((lr_gray,), {"scale": 4}),
-            ((lr_gray, 4), {}),
-            ((lr_gray,), {"scale_factor": 4}),
-            ((lr_gray, out_size), {}),
-            ((lr_gray,), {"size": out_size}),
-            ((lr_gray,), {}),
-        ]
-        r = _try_calls(self.bicubic_fn, variants, ok, "bicubic upsampling")
-        arr = np.asarray(r)
-        if arr.shape != out_size:
-            img = Image.fromarray(arr.astype(np.uint8) if arr.dtype != np.uint8 else arr)
-            img = img.resize((out_size[1], out_size[0]), Image.BICUBIC)
-            arr = np.array(img)
-        return arr
+    def curve_descriptors(self, gray: np.ndarray) -> dict:
+        return self.mod.curve_descriptors(gray.astype(np.float32), PHASE_THRESHOLD, MAX_LAG)
 
-    def tpcf(self, binary: np.ndarray):
-        if self.tpcf_fn is None:
-            return None
-        def ok(r):
-            return r is not None
-        variants = [
-            ((binary,), {"max_lag": MAX_LAG}),
-            ((binary, MAX_LAG), {}),
-            ((binary,), {}),
-        ]
-        r = _try_calls(self.tpcf_fn, variants, ok, "radial TPCF")
-        return _unpack_curve(r, MAX_LAG)
-
-    def psd(self, binary: np.ndarray):
-        if self.psd_fn is None:
-            return None
-        def ok(r):
-            return r is not None
-        variants = [
-            ((binary,), {"max_lag": MAX_LAG}),
-            ((binary, MAX_LAG), {}),
-            ((binary,), {}),
-        ]
-        r = _try_calls(self.psd_fn, variants, ok, "radial PSD")
-        return _unpack_curve(r, MAX_LAG)
-
-
-def _unpack_curve(result, max_len):
-    """Normalise an evaluator curve-function's return value to (x, y)."""
-    if isinstance(result, tuple) and len(result) == 2:
-        x, y = np.asarray(result[0], dtype=float), np.asarray(result[1], dtype=float)
-        return x, y
-    y = np.asarray(result, dtype=float).ravel()
-    x = np.arange(y.size, dtype=float)
-    return x, y
+    def validate_curve_keys(self, probe_gray: np.ndarray) -> None:
+        """Call curve_descriptors() once on a real image and confirm the two
+        keys panel e needs are actually present, before spending time on all
+        4 x 50 images."""
+        curves = self.curve_descriptors(probe_gray)
+        log(f"[evaluator] curve_descriptors() keys: {list(curves.keys())}")
+        missing = [k for k in ("tpcf_radial_phase1", "psd_radial_phase1") if k not in curves]
+        if missing:
+            raise RuntimeError(
+                f"[evaluator] curve_descriptors() did not return expected key(s) {missing}. "
+                f"Available keys: {list(curves.keys())}"
+            )
+        log("[evaluator] TPCF/PSD = evaluator curve_descriptors()")
 
 
 # ============================================================================
@@ -492,13 +366,21 @@ def resolve_survol_dir() -> Path:
     )
 
 
+def natural_key(p: Path):
+    """Exactly the official evaluator's sort key: '0901.png' -> [901], and
+    critically '0.png','1.png',...,'49.png' sorts numerically (0,1,2,...,49)
+    rather than lexicographically (0,1,10,11,...,19,2,20,...)."""
+    s = p.name.lower()
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
+
+
 def list_pngs(d: Path):
     if not d.exists():
         raise FileNotFoundError(f"Expected folder not found: {d}")
-    files = sorted(p for p in d.iterdir() if p.suffix.lower() == ".png")
+    files = [p for p in d.iterdir() if p.suffix.lower() == ".png"]
     if not files:
         raise FileNotFoundError(f"No PNG files found in {d}")
-    return files
+    return sorted(files, key=natural_key)
 
 
 def load_gray(p: Path) -> np.ndarray:
@@ -524,8 +406,14 @@ def check_dir(label, d, expected_n, expected_size):
 
 
 def build_id_maps(hr_files, lr_files, resshift_files, survol_files):
-    """Align by basename where possible; fall back to per_image_metrics.csv
-    file-reference columns for SurVol if its basenames don't match HR's."""
+    """Align HR/LR/ResShift by exact basename match. SurVol has no basename
+    or per_image_metrics.csv file-reference relationship to HR in the
+    official evaluator -- it pairs them purely positionally, after each
+    folder is independently natural-sorted (see natural_key / list_pngs):
+    hr_files[i] <-> lr_files[i] <-> diff_files[i] <-> gan_files[i]. Direct
+    basename matching is tried first only because it's strictly more
+    informative when it happens to hold; the positional fallback is the
+    actual official convention."""
     hr_ids = [p.stem for p in hr_files]
     lr_ids = [p.stem for p in lr_files]
     resshift_ids = [p.stem for p in resshift_files]
@@ -543,54 +431,27 @@ def build_id_maps(hr_files, lr_files, resshift_files, survol_files):
         survol_ordered = [survol_by_stem[i] for i in hr_ids]
         return hr_ids, survol_ordered, "direct basename match"
 
-    log("[align] SurVol basenames do not directly match HR ids -> trying per_image_metrics.csv "
-        "file-reference columns")
-    if not PER_IMAGE_CSV.exists():
-        raise RuntimeError(f"[align] cannot align SurVol: basenames differ and {PER_IMAGE_CSV} is missing.")
-    df = pd.read_csv(PER_IMAGE_CSV)
-    survol_file_col = None
-    for c in df.columns:
-        cn = _norm(c)
-        if ("survol" in cn or "gan" in cn) and ("file" in cn or "path" in cn or "image" in cn):
-            survol_file_col = c
-            break
-    if survol_file_col is None:
+    if len(survol_files) != len(hr_files):
         raise RuntimeError(
-            f"[align] no SurVol file-reference column found in {PER_IMAGE_CSV}. "
-            f"Available columns: {list(df.columns)}"
+            f"[align] SurVol has {len(survol_files)} files but HR has {len(hr_files)}; "
+            f"positional natural-sort alignment requires equal counts."
         )
-    id_col = pick_col(df, ["image_id", "id", "sample_id", "stem"], "image id", required=False)
-    if id_col is None:
-        raise RuntimeError(f"[align] no image-id column found in {PER_IMAGE_CSV} to pair with "
-                            f"'{survol_file_col}'. Available columns: {list(df.columns)}")
 
-    id_to_survol_basename = {}
-    for _, row in df.iterrows():
-        iid = _canon_id(row[id_col])
-        basename = Path(str(row[survol_file_col])).name
-        id_to_survol_basename[iid] = basename
+    log("[align] SurVol basenames do not match HR ids -> using the official evaluator's "
+        "positional natural-sort convention (hr_files[i] <-> gan_files[i] after each folder "
+        "is independently natural-sorted).")
+    log("[align] SurVol aligned by official evaluator positional natural-sort convention.")
+    survol_ordered = survol_files  # already natural-sorted by list_pngs()
 
-    survol_ordered = []
-    for iid in hr_ids:
-        canon = _canon_id(iid)
-        key = canon if canon in id_to_survol_basename else None
-        if key is None:
-            for cand in id_to_survol_basename:
-                if _norm(cand) == _norm(canon) or _norm(cand).endswith(_norm(canon)):
-                    key = cand
-                    break
-        if key is None:
-            raise RuntimeError(f"[align] could not find a SurVol file reference for HR id '{iid}' "
-                                f"in {PER_IMAGE_CSV} column '{survol_file_col}'.")
-        basename = id_to_survol_basename[key]
-        stem = Path(basename).stem
-        if stem not in survol_by_stem:
-            raise RuntimeError(f"[align] {PER_IMAGE_CSV} references SurVol file '{basename}' for id "
-                                f"'{iid}', but no such file exists in the resolved SurVol folder.")
-        survol_ordered.append(survol_by_stem[stem])
+    pairs = list(zip(hr_files, survol_ordered))
+    for hr_f, sv_f in pairs[:5]:
+        log(f"[align] {hr_f.name} -> {sv_f.name}")
+    if len(pairs) > 7:
+        log("[align] ...")
+        for hr_f, sv_f in pairs[-2:]:
+            log(f"[align] {hr_f.name} -> {sv_f.name}")
 
-    log(f"[align] SurVol aligned to HR ids via {PER_IMAGE_CSV.name} column '{survol_file_col}'.")
-    return hr_ids, survol_ordered, f"per_image_metrics.csv column '{survol_file_col}'"
+    return hr_ids, survol_ordered, "official evaluator positional natural-sort convention"
 
 
 # ============================================================================
@@ -648,18 +509,24 @@ def load_main_table():
 
 def sanity_check_main_table(df):
     method_col = pick_col(df, ["method", "model", "name", "key", "candidate"], "method")
+    # Exact official main_table_candidates.csv column names first, with a
+    # couple of looser fallbacks kept only in case the CSV schema drifts.
     metric_candidates = {
-        "psnr": ["psnr", "psnr_mean"],
-        "ssim": ["ssim", "ssim_mean"],
-        "phase_fraction_error": ["phase_fraction_error", "phase_fraction_abs_error", "phasefractionerror"],
-        "iou": ["iou", "iou_mean"],
-        "dice": ["dice", "dice_mean"],
-        "local_porosity_w32": ["local_porosity_w32", "local_porosity_w32_mae", "local_porosity_w32_mean"],
-        "interface_density_error": ["interface_density_error", "interface_density_abs_error",
-                                     "desc_abs_error__interface_density"],
-        "tpcf_mae": ["tpcf_mae", "radial_tpcf_mae", "curve_error__tpcf_radial_phase1_mae"],
-        "psd_mae": ["psd_mae", "radial_psd_mae", "curve_error__psd_radial_phase1_mae"],
-        "lr_consistency_psnr": ["lr_consistency_psnr", "lr_consistency"],
+        "psnr": ["psnr_mean", "psnr"],
+        "ssim": ["ssim_mean", "ssim"],
+        "phase_fraction_error": ["phase_fraction_abs_error_mean", "phase_fraction_abs_error",
+                                  "phase_fraction_error"],
+        "iou": ["phase_iou_1_mean", "phase_iou_1", "iou_mean", "iou"],
+        "dice": ["phase_dice_1_mean", "phase_dice_1", "dice_mean", "dice"],
+        "local_porosity_w32": ["local_porosity_w32_map_mae_mean", "local_porosity_w32_map_mae",
+                                "local_porosity_w32"],
+        "interface_density_error": ["desc_abs_error__interface_density_mean",
+                                     "desc_abs_error__interface_density", "interface_density_error"],
+        "tpcf_mae": ["curve_error__tpcf_radial_phase1_mae_mean", "curve_error__tpcf_radial_phase1_mae",
+                     "tpcf_mae"],
+        "psd_mae": ["curve_error__psd_radial_phase1_mae_mean", "curve_error__psd_radial_phase1_mae",
+                    "psd_mae"],
+        "lr_consistency_psnr": ["lr_consistency_psnr_mean", "lr_consistency_psnr"],
     }
     resolved_cols = {k: pick_col(df, v, k, required=False) for k, v in metric_candidates.items()}
 
@@ -931,8 +798,8 @@ def plot_metric_bars(fig, card, main_df, resolved_cols, method_col):
     std_candidates = {
         "psnr": ["psnr_std", "psnr_sd"],
         "ssim": ["ssim_std", "ssim_sd"],
-        "phase_fraction_error": ["phase_fraction_error_std", "phase_fraction_abs_error_std"],
-        "interface_density_error": ["interface_density_error_std", "desc_abs_error__interface_density_std"],
+        "phase_fraction_error": ["phase_fraction_abs_error_std", "phase_fraction_error_std"],
+        "interface_density_error": ["desc_abs_error__interface_density_std", "interface_density_error_std"],
     }
 
     for i, (metric, title, fmt) in enumerate(BAR_METRIC_SPECS):
@@ -1006,34 +873,29 @@ def plot_curve_group(ax, curves, title, xlabel, ylabel):
     leg.set_zorder(8)
 
 
-def compute_group_curves(evaluator, binaries_by_key):
-    """binaries_by_key: {key: [binary_img, ...]} for hr/bicubic/resshift/survol."""
-    if evaluator.tpcf_fn is None and evaluator.psd_fn is None:
-        return None, None
-
+def compute_group_curves(evaluator, grays_by_key):
+    """grays_by_key: {key: [grayscale_img, ...]} for hr/bicubic/resshift/survol.
+    Grayscale images are passed to curve_descriptors() directly (never
+    pre-binarized -- the evaluator does its own thresholding internally),
+    matching how the official evaluator itself calls it."""
     tpcf_curves, psd_curves = {}, {}
-    for key, binaries in binaries_by_key.items():
+    for key, grays in grays_by_key.items():
         tpcf_ys, psd_ys = [], []
-        x_tpcf = x_psd = None
-        for b in binaries:
-            if evaluator.tpcf_fn is not None:
-                x, y = evaluator.tpcf(b)
-                x_tpcf = x if x_tpcf is None else x_tpcf
-                tpcf_ys.append(y)
-            if evaluator.psd_fn is not None:
-                x, y = evaluator.psd(b)
-                x_psd = x if x_psd is None else x_psd
-                psd_ys.append(y)
-        if tpcf_ys:
-            arr = np.array(tpcf_ys)
-            tpcf_curves[key] = {"x": x_tpcf, "y": arr.mean(axis=0),
-                                 "std": arr.std(axis=0) if key == "hr" else None}
-        if psd_ys:
-            arr = np.array(psd_ys)
-            psd_curves[key] = {"x": x_psd, "y": arr.mean(axis=0),
-                                "std": arr.std(axis=0) if key == "hr" else None}
+        for g in grays:
+            curves = evaluator.curve_descriptors(g)
+            tpcf_ys.append(np.asarray(curves["tpcf_radial_phase1"], dtype=float))
+            psd_ys.append(np.asarray(curves["psd_radial_phase1"], dtype=float))
 
-    return (tpcf_curves if tpcf_curves else None), (psd_curves if psd_curves else None)
+        tpcf_arr = np.array(tpcf_ys)
+        psd_arr = np.array(psd_ys)
+        tpcf_curves[key] = {"x": np.arange(tpcf_arr.shape[1], dtype=float),
+                             "y": tpcf_arr.mean(axis=0),
+                             "std": tpcf_arr.std(axis=0) if key == "hr" else None}
+        psd_curves[key] = {"x": np.arange(psd_arr.shape[1], dtype=float),
+                            "y": psd_arr.mean(axis=0),
+                            "std": psd_arr.std(axis=0) if key == "hr" else None}
+
+    return tpcf_curves, psd_curves
 
 
 # ============================================================================
@@ -1065,7 +927,7 @@ def main():
     log(f"[align] SurVol alignment method: {align_method}")
 
     evaluator = Evaluator(load_evaluator_module())
-    log(f"[evaluator] PHASE_THRESHOLD (nominal) = {PHASE_THRESHOLD}, MAX_LAG = {MAX_LAG}")
+    log(f"[evaluator] PHASE_THRESHOLD = {PHASE_THRESHOLD}, MAX_LAG = {MAX_LAG}")
 
     main_df = load_main_table()
     resolved_cols, method_col = sanity_check_main_table(main_df)
@@ -1102,18 +964,18 @@ def main():
     pred_binary_roi = {k: evaluator.binarize(images_roi[k]) for k in PANEL_C_COLS}
 
     # ---- panel-e curves (full 50-image sets) -------------------------------
+    evaluator.validate_curve_keys(hr_full)
     log("[panel-e] computing radial TPCF/PSD curves from the 50-image official test set "
-        "using the evaluator's own functions ...")
-    binaries_by_key = {"hr": [], "bicubic": [], "resshift": [], "survol": []}
+        "using evaluator.curve_descriptors() on grayscale images (never pre-binarized) ...")
+    grays_by_key = {"hr": [], "bicubic": [], "resshift": [], "survol": []}
     for i in range(EXPECTED_N):
         hr_i = load_gray(hr_files[i])
-        binaries_by_key["hr"].append(evaluator.binarize(hr_i))
+        grays_by_key["hr"].append(hr_i)
         lr_i = load_gray(lr_files[i])
-        bic_i = evaluator.bicubic(lr_i, out_size=hr_i.shape)
-        binaries_by_key["bicubic"].append(evaluator.binarize(bic_i))
-        binaries_by_key["resshift"].append(evaluator.binarize(load_gray(resshift_files[i])))
-        binaries_by_key["survol"].append(evaluator.binarize(load_gray(survol_files_ordered[i])))
-    tpcf_curves, psd_curves = compute_group_curves(evaluator, binaries_by_key)
+        grays_by_key["bicubic"].append(evaluator.bicubic(lr_i, out_size=hr_i.shape))
+        grays_by_key["resshift"].append(load_gray(resshift_files[i]))
+        grays_by_key["survol"].append(load_gray(survol_files_ordered[i]))
+    tpcf_curves, psd_curves = compute_group_curves(evaluator, grays_by_key)
 
     # ---- canvas -------------------------------------------------------------
     fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=BG)
@@ -1141,6 +1003,17 @@ def main():
     ax_psd = fig.add_axes([ex_ + e_pl + e_plot_w + e_gx, ey_ + e_pb, e_plot_w, e_plot_h])
     plot_curve_group(ax_tpcf, tpcf_curves, "Radial TPCF", "Lag / radius (pixels)", r"$S_2(r)$")
     plot_curve_group(ax_psd, psd_curves, "Radial PSD", "Radial frequency bin", "Power")
+
+    # =========================== PRE-SAVE CONFIRMATION =======================
+    log("\nHR = 50")
+    log("LR = 50")
+    log("ResShift = 50")
+    log("SurVol = 50")
+    log("")
+    log(f"SurVol alignment = {align_method}")
+    log("phase convention = >=128")
+    log("bicubic = evaluator resize_to + PIL Image.BICUBIC")
+    log("TPCF/PSD = evaluator curve_descriptors()")
 
     # =========================== SAVE ========================================
     png = OUT / f"{STEM}.png"
