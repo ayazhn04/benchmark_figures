@@ -913,6 +913,12 @@ def load_pair_connectedness_curves() -> dict:
 
 
 # ---- panel c: pair-connectedness RMSE (curve_errors_vs_real.csv) ---------
+#
+# The official curve-error table is likely LONG format (group, metric/
+# metric_name/descriptor/name/curve/curve_name, optionally phase, optionally
+# axis, and a curve_rmse/rmse/error/curve_error value column) rather than a
+# wide table with separate diffusion_rmse/gan_rmse columns. Long format is
+# tried first; the previous wide-format logic is kept only as a fallback.
 
 RMSE_ID_CANDIDATES = ["metric", "descriptor", "name", "curve", "curve_name"]
 RMSE_VALUE_ALIASES = {
@@ -923,39 +929,119 @@ RMSE_VALUE_ALIASES = {
 
 def load_pair_connectedness_rmse() -> dict:
     df = _load_csv(CURVE_ERRORS)
+
+    metric_col = pick_col(df, ["metric", "metric_name", "descriptor", "name", "curve", "curve_name"],
+                          "rmse.metric", required=False)
+    group_col = pick_col(df, ["group", "set", "model", "class", "category"],
+                         "rmse.group", required=False)
+    axis_col = pick_col(df, ["axis", "direction", "dim", "dimension"],
+                        "rmse.axis", required=False)
+    phase_col = pick_col(df, ["phase", "phase_name", "label"],
+                         "rmse.phase", required=False)
+    rmse_col = pick_col(df, ["curve_rmse", "rmse", "error", "curve_error"],
+                        "rmse.value", required=False)
+
+    # ---------- long-format path, preferred ----------
+    if metric_col is not None and group_col is not None and rmse_col is not None:
+        work = df.copy()
+        work["_metric_norm"] = work[metric_col].astype(str).map(_norm)
+        work["_group"] = work[group_col].map(map_group_alias)
+
+        if axis_col is not None:
+            work["_axis_norm"] = work[axis_col].astype(str).map(_norm)
+        else:
+            work["_axis_norm"] = ""
+
+        if phase_col is not None:
+            work["_phase_norm"] = work[phase_col].astype(str).map(_norm)
+        else:
+            work["_phase_norm"] = "pore"
+
+        out = {}
+        for axis_letter in ("x", "y", "z"):
+            mask_metric = work["_metric_norm"].map(
+                lambda v: any(tok in v for tok in PAIR_CONN_ALIAS_TOKENS)
+            )
+
+            if axis_col is not None:
+                mask_axis = work["_axis_norm"].map(
+                    lambda v: v == axis_letter or v.startswith(axis_letter)
+                )
+            else:
+                mask_axis = work["_metric_norm"].map(
+                    lambda v: v.endswith(axis_letter)
+                    or f"{axis_letter}axis" in v
+                    or f"axis{axis_letter}" in v
+                )
+
+            if phase_col is not None:
+                mask_phase = work["_phase_norm"].map(lambda v: v == "pore" or "pore" in v)
+            else:
+                mask_phase = True
+
+            sub = work[mask_metric & mask_axis & mask_phase].copy()
+
+            axis_out = {"raw_name": None}
+            for g in ("diffusion", "gan"):
+                rows = sub[sub["_group"] == g]
+                if len(rows) != 1:
+                    raise RuntimeError(
+                        f"[rmse] long-format axis '{axis_letter}' group '{g}': expected exactly "
+                        f"one row, got {len(rows)}. Matching rows were:\n"
+                        f"{sub[[group_col, metric_col, rmse_col] + ([axis_col] if axis_col else []) + ([phase_col] if phase_col else [])].to_string(index=False)}"
+                    )
+                row = rows.iloc[0]
+                axis_out[g] = float(pd.to_numeric(row[rmse_col], errors="coerce"))
+                axis_out["raw_name"] = str(row[metric_col])
+
+            out[axis_letter] = axis_out
+            log(f"[rmse] axis '{axis_letter}' resolved from long-format {CURVE_ERRORS.name}: "
+                f"diffusion={axis_out['diffusion']:.6g} gan={axis_out['gan']:.6g} "
+                f"(metric='{axis_out['raw_name']}')")
+
+        for axis_letter in ("x", "y", "z"):
+            exp = {"x": EXPECTED_RMSE_X, "y": EXPECTED_RMSE_Y, "z": EXPECTED_RMSE_Z}[axis_letter]
+            _check_close(f"rmse.{axis_letter}.diffusion", out[axis_letter]["diffusion"],
+                         exp["diffusion"], RMSE_TOL)
+            _check_close(f"rmse.{axis_letter}.gan", out[axis_letter]["gan"],
+                         exp["gan"], RMSE_TOL)
+        return out
+
+    # ---------- wide-format fallback ----------
     id_col = pick_col(df, RMSE_ID_CANDIDATES, "rmse.id", required=False)
     if id_col is None:
         raise RuntimeError(f"[rmse] {CURVE_ERRORS} has no recognizable id column "
                             f"(tried {RMSE_ID_CANDIDATES}); columns: {list(df.columns)}")
+
     diff_col = pick_col(df, RMSE_VALUE_ALIASES["diffusion"], "rmse.diffusion", required=False)
     gan_col = pick_col(df, RMSE_VALUE_ALIASES["gan"], "rmse.gan", required=False)
     if diff_col is None or gan_col is None:
-        raise RuntimeError(f"[rmse] {CURVE_ERRORS} missing diffusion/gan RMSE columns; "
-                            f"columns: {list(df.columns)}")
+        raise RuntimeError(f"[rmse] {CURVE_ERRORS} missing both long-format curve_rmse columns "
+                            f"and wide-format diffusion/gan RMSE columns; columns: {list(df.columns)}")
 
     id_norm = df[id_col].astype(str).map(_norm)
     out = {}
-    for axis_letter, exp_key in (("x", "x"), ("y", "y"), ("z", "z")):
+    for axis_letter in ("x", "y", "z"):
         mask = id_norm.map(lambda v: any(tok in v for tok in PAIR_CONN_ALIAS_TOKENS)
-                            and (v.endswith(axis_letter) or f"_{axis_letter}_" in v
+                            and (v.endswith(axis_letter)
+                                 or f"_{axis_letter}_" in v
                                  or v.endswith(f"{axis_letter}axis")))
         sub = df[mask]
         if len(sub) != 1:
-            raise RuntimeError(f"[rmse] axis '{axis_letter}': expected exactly 1 matching row in "
+            raise RuntimeError(f"[rmse] wide-format axis '{axis_letter}': expected exactly 1 matching row in "
                                 f"{CURVE_ERRORS}, got {len(sub)}; id values: "
                                 f"{df[id_col].unique()[:20].tolist()}")
         row = sub.iloc[0]
         diff_v = float(pd.to_numeric(row[diff_col], errors="coerce"))
         gan_v = float(pd.to_numeric(row[gan_col], errors="coerce"))
         out[axis_letter] = {"diffusion": diff_v, "gan": gan_v, "raw_name": str(row[id_col])}
-        log(f"[rmse] axis '{axis_letter}' resolved from {CURVE_ERRORS.name} (row='{row[id_col]}'): "
-            f"diffusion={diff_v:.6g} gan={gan_v:.6g}")
 
     for axis_letter in ("x", "y", "z"):
         exp = {"x": EXPECTED_RMSE_X, "y": EXPECTED_RMSE_Y, "z": EXPECTED_RMSE_Z}[axis_letter]
         _check_close(f"rmse.{axis_letter}.diffusion", out[axis_letter]["diffusion"],
                      exp["diffusion"], RMSE_TOL)
         _check_close(f"rmse.{axis_letter}.gan", out[axis_letter]["gan"], exp["gan"], RMSE_TOL)
+
     return out
 
 
