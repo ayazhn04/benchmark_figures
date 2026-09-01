@@ -937,12 +937,16 @@ CURVE_AXIS_COL_CANDIDATES = ["axis", "direction", "dim", "dimension"]
 CURVE_X_COL_CANDIDATES = ["r", "x", "radius", "distance", "lag", "bin", "bin_center", "coord"]
 CURVE_VALUE_COL_CANDIDATES = ["mean_value", "mean", "value", "y", "y_mean", "pair_connectedness",
                               "prob", "probability"]
+CURVE_STD_COL_CANDIDATES = ["std_value", "std", "sd", "stdev", "value_std", "y_std"]
 
 
 def load_pair_connectedness_curves() -> dict:
-    """Returns {axis_letter: {group: {'x': arr, 'y': arr}}} for x/y/z pore
-    pair-connectedness, resolved from CURVE_GROUP_MEANS only, using EXACT
-    metric_name/phase/axis equality (no substring/alias matching)."""
+    """Returns {axis_letter: {group: {'x': arr, 'y': arr, 'std': arr_or_None}}}
+    for x/y/z pore pair-connectedness, resolved from CURVE_GROUP_MEANS only,
+    using EXACT metric_name/phase/axis equality (no substring/alias
+    matching). 'std' is populated only when the official table itself
+    carries a recognizable std column -- never fabricated -- and is used
+    solely for optional uncertainty shading in panel b."""
     df = _load_csv(CURVE_GROUP_MEANS)
     log(f"[curves] {CURVE_GROUP_MEANS.name} first rows:\n{df.head(10).to_string()}")
 
@@ -952,6 +956,10 @@ def load_pair_connectedness_curves() -> dict:
     x_col = pick_col(df, CURVE_X_COL_CANDIDATES, "curve.r")
     value_col = pick_col(df, CURVE_VALUE_COL_CANDIDATES, "curve.value")
     group_col = pick_col(df, CURVE_GROUP_COL_CANDIDATES, "curve.group")
+    std_col = pick_col(df, CURVE_STD_COL_CANDIDATES, "curve.std", required=False)
+    log(f"[curves] optional std column: {std_col!r} (uncertainty shading enabled)"
+        if std_col is not None else
+        "[curves] no recognizable std column -- panel b will show mean lines only, no shading")
 
     out = {}
     for axis_letter in ("x", "y", "z"):
@@ -1000,6 +1008,15 @@ def load_pair_connectedness_curves() -> dict:
                 raise RuntimeError(f"[curves] axis '{axis_letter}' group '{g}': non-finite values in "
                                     f"'{value_col}' after exact filtering")
 
+            std_arr = None
+            if std_col is not None:
+                cand = pd.to_numeric(gsub[std_col], errors="coerce").to_numpy(float)
+                if np.all(np.isfinite(cand)) and np.all(cand >= 0):
+                    std_arr = cand
+                else:
+                    log(f"[curves] axis '{axis_letter}' group '{g}': non-finite/negative '{std_col}' "
+                        f"values -- omitting uncertainty shading for this curve only")
+
             if ref_r is None:
                 ref_r = r_arr
             elif r_arr.shape != ref_r.shape or not np.allclose(r_arr, ref_r):
@@ -1008,7 +1025,7 @@ def load_pair_connectedness_curves() -> dict:
                     f"groups' r-grid -- refusing to plot mismatched-grid curves.\n"
                     f"this group r={r_arr.tolist()}\nreference r={ref_r.tolist()}"
                 )
-            axis_out[g] = {"x": r_arr, "y": y_arr}
+            axis_out[g] = {"x": r_arr, "y": y_arr, "std": std_arr}
 
         log(f"[curves] axis '{axis_letter}': exact metric_name='{exact_metric_name}' phase='pore' "
             f"axis='{axis_letter}' -> {len(ref_r)} r-grid points/group, identical across groups")
@@ -1638,15 +1655,27 @@ def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, show_legend=
     ax.set_ylabel("Pair-connectedness", color=SUBTEXT)
     ax.set_ylim(0, ymax * 1.08)
 
+    # Restrained-alpha std band under each mean line, ONLY when the
+    # official table itself carries a std column (never fabricated). Drawn
+    # first (low zorder) so the crisp mean lines sit cleanly on top.
+    for g in GROUPS:
+        d = curve_data[g]
+        if d.get("std") is not None:
+            xs, ys = _pchip_display_curve(d["x"], d["y"])
+            _, std_dense = _pchip_display_curve(d["x"], d["std"])
+            lo = np.clip(ys - std_dense, 0.0, None)
+            hi = ys + std_dense
+            ax.fill_between(xs, lo, hi, color=COLORS[g], alpha=0.14, linewidth=0, zorder=2)
+
     for g in GROUPS:
         d = curve_data[g]
         xs, ys = _pchip_display_curve(d["x"], d["y"])
         ax.plot(xs, ys, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
-                solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
+                solid_capstyle="round", label=LABELS[g], zorder=4 if g == "real" else 5)
         # Small markers at the true measured lag points -- keeps the curve
         # legible as real discrete data rather than a purely synthetic line.
         ax.scatter(d["x"], d["y"], s=9.0, color=COLORS[g], edgecolors="none",
-                   alpha=0.85, zorder=5)
+                   alpha=0.85, zorder=6)
     ax.margins(x=0.02)
 
     if show_legend:
@@ -1668,7 +1697,7 @@ def build_panel_b(fig, card, curve_data):
     bx_, by_, bw_, bh_ = card
     header_title_y = by_ + bh_ - 0.018
     plot_top = header_title_y - 0.048
-    pad_l, pad_r, pad_b, gap_y = 0.078, 0.020, 0.058, 0.056
+    pad_l, pad_r, pad_b, gap_y = 0.078, 0.020, 0.058, 0.064
 
     fig.text(bx_ + 0.014, header_title_y, "Pore pair-connectedness",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
@@ -1730,12 +1759,16 @@ def load_per_sample_scalars():
 
 
 def plot_descriptor_distribution(ax, per_sample_df, exact_col, title, panel_b_key,
-                                  panel_b_metrics, rng):
+                                  panel_b_metrics, rng, show_ylabels=True):
     """C1/C2: per-sample box + jittered strip (same convention as Figure
     4.1's plot_connectivity_distribution: horizontal box per group, jittered
     strip, mean diamond, dotted reference-mean line) when an EXACT-named
     column is available in the official per-sample CSV; otherwise a compact
-    mean +/- std point per group from group_scalar_summary.csv."""
+    mean +/- std point per group from group_scalar_summary.csv. C1 and C2
+    share the same y-category positions (DESCRIPTOR_GROUP_POS); C2 passes
+    show_ylabels=False so "Reference"/"PoreGen/DiffSci"/"IPWGAN" is only
+    spelled out once (on C1) instead of a second copy crowding into the
+    narrow C1-C2 gap."""
     style_axis(ax, grid=False)
     ax.grid(True, axis="x", color=GRID, linewidth=0.55, alpha=0.9)
     ax.set_axisbelow(True)
@@ -1745,7 +1778,11 @@ def plot_descriptor_distribution(ax, per_sample_df, exact_col, title, panel_b_ke
 
     def _finalize_yaxis():
         ax.set_yticks([DESCRIPTOR_GROUP_POS[g] for g in DESCRIPTOR_GROUP_ORDER])
-        ax.set_yticklabels([LABELS[g] for g in DESCRIPTOR_GROUP_ORDER], fontsize=6.8)
+        if show_ylabels:
+            ax.set_yticklabels([LABELS[g] for g in DESCRIPTOR_GROUP_ORDER], fontsize=7.0)
+        else:
+            ax.set_yticklabels([])
+            ax.tick_params(axis="y", length=0)
         ax.set_ylim(-0.66, 2.66)
 
     col = pick_col(per_sample_df, [exact_col], f"per_sample.{exact_col}",
@@ -1880,7 +1917,12 @@ def build_panel_c(fig, card, panel_b_metrics, advanced_metrics, per_sample_df):
     cx_, cy_, cw_, ch_ = card
     header_title_y = cy_ + ch_ - 0.020
     plot_top = header_title_y - 0.058
-    pad_l, pad_r, pad_b, gap_x = 0.045, 0.020, 0.052, 0.028
+    # pad_l is sized for the longest y-category label ("PoreGen/DiffSci")
+    # plus real breathing room to the card's left border -- the previous
+    # smaller margin left that label crowding the edge. gap_x is likewise
+    # widened between C1 and C2 specifically (C2 no longer draws its own
+    # copy of the labels, which was the other half of that crowding).
+    pad_l, pad_r, pad_b, gap_x = 0.088, 0.020, 0.052, 0.036
 
     fig.text(cx_ + 0.014, header_title_y, "Topology-preservation descriptors",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
@@ -1913,7 +1955,8 @@ def build_panel_c(fig, card, panel_b_metrics, advanced_metrics, per_sample_df):
     ax_c2 = fig.add_axes([x1, plot_bottom, plot_w, plot_h])
     plot_descriptor_distribution(ax_c2, per_sample_df, "disconnected_fraction_pore",
                                   "Disconnected\npore fraction",
-                                  "disconnected_pore_fraction", panel_b_metrics, rng)
+                                  "disconnected_pore_fraction", panel_b_metrics, rng,
+                                  show_ylabels=False)
 
     x2 = x1 + plot_w + gap_x
     ax_c3 = fig.add_axes([x2, plot_bottom, plot_w, plot_h])
