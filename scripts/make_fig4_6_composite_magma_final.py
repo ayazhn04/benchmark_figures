@@ -7,9 +7,9 @@ binary porous-network topology preservation.
 
 Same visual contract as Figures 4.1-4.5 (make_fig4_1_composite_magma_final.py
 .. make_fig4_5_composite_magma_final.py): same cards, fonts, panel-label
-style, export block, panel-a render style (depth-shaded magma isosurface,
-common alpha-crop framing), and panel-a slice-overlay palette convention
-(the flat, high-contrast three-color language introduced in Figure 4.5's
+style, export block, panel-a render style (isosurface rendering, common
+alpha-crop framing), and panel-a slice-overlay palette convention (the
+flat, high-contrast three-color language introduced in Figure 4.5's
 PHASE_COLORS). No tight_layout / constrained_layout / bbox_inches.
 
 Only the exact official standardized 128^3 binary volume folders and the
@@ -18,18 +18,24 @@ path search, no WRONG_12_40 / BACKUP folders, no raw HDF5 GAN files, no
 non-final diagnostic outputs. Extensive hard sanity checks raise and
 refuse to save rather than silently substituting or faking data.
 
-Panel a shows a true 3D isosurface of the largest connected pore backbone
-plus representative orthogonal (XY/XZ/YZ) slices with a topology-class
-overlay (solid / largest connected pore component / disconnected pore
-fragments), selected by an official representative CSV and a
-deterministic, content-aware slice search. Panel b is a connected-backbone
-and directional-percolation dashboard (two grouped bar charts, mean +/-
-std where the official summary provides std). Panel c shows the pore
-pair-connectedness mechanism (three PCHIP-smoothed mean curves from the
-official curve_group_means.csv, RMSE folded into each subplot title) plus
-a compact point/range summary of the supplementary skeleton/SNOW network
-descriptors. No interpretive sentences anywhere in the figure -- it
-communicates entirely through data.
+Panel a shows a true 3D isosurface of the FULL pore topology (largest
+connected component + disconnected fragments, each its own flat color)
+plus representative orthogonal (XY/XZ/YZ) slices with the same
+topology-class overlay, selected by an official representative CSV and a
+deterministic composite score (closeness to the official group means of
+pore fraction / LCF / disconnected fraction / mean percolating axes, plus
+a 3D-framing occupancy term) over the CSV's 6 official candidates per
+group -- never a broader search. Panel b is the pore pair-connectedness
+mechanism: three clean mean-curve subplots (x/y/z) in the tall card,
+loaded with EXACT metric_name/phase/axis equality filtering from
+curve_group_means.csv (no substring/alias matching, which previously let
+solid-phase rows leak into the pore curve and produce a sawtooth). Panel c
+is a wide topology-preservation descriptor dashboard in the full-width
+bottom card: per-sample (or mean +/- std) distributions of the largest
+connected pore-component fraction and disconnected pore fraction,
+directional percolating pore fraction, and the supplementary skeleton/SNOW
+network descriptors, with one shared model legend. No interpretive
+sentences anywhere in the figure -- it communicates entirely through data.
 """
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, Patch
 from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 
@@ -121,17 +127,16 @@ CAPTION_TEXT = (
     "topology-preservation task. (a) Representative 3D renderings and "
     "orthogonal XY, XZ, and YZ slices from real validation samples, "
     "PoreGen/DiffSci diffusion outputs, and IPWGAN outputs, with the largest "
-    "connected pore backbone and disconnected pore fragments highlighted "
+    "connected pore component and disconnected pore fragments highlighted "
     "using the same 6-connectivity convention as the topology metrics. "
-    "(b) Connected-backbone and spanning-path descriptors, including largest "
-    "pore-component fraction, disconnected pore fraction, mean percolating "
-    "axes, and directional percolating pore fractions. (c) Pore "
-    "pair-connectedness curves and supplementary skeleton/SNOW network "
-    "descriptors showing preservation or fragmentation of long-range pore "
-    "connectivity. The figure shows that visual plausibility alone is "
-    "insufficient: PoreGen/DiffSci remains close to the real connected-pore "
-    "structure, whereas IPWGAN produces valid-looking but substantially "
-    "fragmented pore networks."
+    "(b) Pore pair-connectedness curves in the x, y, and z directions. "
+    "(c) Topology-preservation descriptors: largest connected pore-component "
+    "fraction, disconnected pore fraction, directional percolating pore "
+    "fraction, and supplementary skeleton/SNOW network descriptors. The "
+    "figure shows that visual plausibility alone is insufficient: "
+    "PoreGen/DiffSci remains close to the real connected-pore structure and "
+    "its pair-connectedness, whereas IPWGAN produces valid-looking but "
+    "substantially fragmented pore networks."
 )
 
 # ============================================================================
@@ -544,14 +549,51 @@ SELECTION_SCORE_COL_CANDIDATES = ["selection_score", "score", "rank_score", "med
 PHASE_FRACTION_COL_CANDIDATES = ["phase_fraction_pore", "pore_fraction", "phase_fraction", "porosity"]
 
 
-def load_representative_selection() -> tuple:
+# Composite-score weighting: each closeness term is expressed in "tolerance
+# units" (deviation from the official group mean, divided by that metric's
+# own sanity tolerance), so a candidate landing exactly on every official
+# group mean scores 0. OCCUPANCY_WEIGHT sets how strongly a visually
+# cropped-looking candidate (pore phase clustered away from the domain
+# boundary on some axis) is penalized, in the same tolerance-unit scale --
+# chosen so it can outweigh a small deviation on any single metric but not
+# override a candidate that is close on ALL FOUR topology descriptors.
+OCCUPANCY_WEIGHT = 2.0
+
+
+def _extent_fill(vol: np.ndarray) -> float:
+    """Fraction of the full domain spanned by the pore phase along its most
+    constrained axis (bounding-box occupancy). Used ONLY to avoid selecting
+    a representative whose pore phase clusters in a small sub-region and
+    would render as a visually cropped/incomplete 3D object -- never used
+    for any plotted metric or sanity check."""
+    mask = vol == PORE_LABEL
+    if not mask.any():
+        return 0.0
+    fills = []
+    for axis in range(3):
+        other_axes = tuple(a for a in range(3) if a != axis)
+        present = np.any(mask, axis=other_axes)
+        nz = np.nonzero(present)[0]
+        span = (nz.max() - nz.min() + 1) if nz.size else 0
+        fills.append(span / vol.shape[axis])
+    return float(min(fills))
+
+
+def select_representative_samples(volumes_by_group: dict) -> tuple:
     """The official representative CSV carries multiple candidate rows per
-    group (not exactly 1): for each group, sort candidates by
-    selection_score ascending, then by the absolute phase_fraction_pore
-    difference from that group's candidate-set mean (tie-break), then by
-    filename lexicographically (final tie-break), and take the first row.
+    group (not exactly 1). For each candidate, compute its topology
+    descriptors directly (6-connectivity, same as every other computation
+    in this script) from the already-loaded, already-validated volume, and
+    rank candidates by a deterministic composite score: distance from the
+    OFFICIAL group means of pore fraction / largest-component fraction /
+    disconnected fraction / mean percolating axes (each in tolerance
+    units), plus a penalty for low bounding-box occupancy (a candidate
+    whose pore phase is clustered away from the domain edges would render
+    as a visually cropped/incomplete 3D object). This is restricted to the
+    6 official candidate rows per group -- not cherry-picking across the
+    full 50-sample set -- and is fully deterministic and documented.
     Returns (picked: {group: Path}, candidate_audit: {group: [row dicts]})
-    with every candidate row logged for provenance."""
+    with every candidate row and its computed score logged for provenance."""
     if not REPRESENTATIVE_MEDIAN_PHASE.exists():
         raise FileNotFoundError(f"[representative] missing official file: {REPRESENTATIVE_MEDIAN_PHASE}")
     df = pd.read_csv(REPRESENTATIVE_MEDIAN_PHASE)
@@ -570,12 +612,6 @@ def load_representative_selection() -> tuple:
         )
     score_col = pick_col(df, SELECTION_SCORE_COL_CANDIDATES, "representative.selection_score",
                           required=False)
-    if score_col is None:
-        raise RuntimeError(
-            f"[representative] {REPRESENTATIVE_MEDIAN_PHASE} carries multiple candidate rows per "
-            f"group and requires a selection_score column to pick the representative one (tried "
-            f"{SELECTION_SCORE_COL_CANDIDATES}). Columns present: {list(df.columns)}."
-        )
     phase_col = pick_col(df, PHASE_FRACTION_COL_CANDIDATES, "representative.phase_fraction_pore",
                           required=False)
 
@@ -590,54 +626,61 @@ def load_representative_selection() -> tuple:
             raise RuntimeError(f"[representative] no candidate rows for group '{g}' in "
                                 f"{REPRESENTATIVE_MEDIAN_PHASE}")
 
-        sub["_score"] = pd.to_numeric(sub[score_col], errors="coerce")
-        if sub["_score"].isna().any():
-            raise RuntimeError(f"[representative] group '{g}': non-numeric selection_score values "
-                                f"in {REPRESENTATIVE_MEDIAN_PHASE}: {sub[score_col].tolist()}")
+        by_basename = {f.name: f for f in volumes_by_group[g].keys()}
+        rows = []
+        for _, row in sub.iterrows():
+            raw_value = str(row[fcol])
+            basename = Path(raw_value).name
+            match = by_basename.get(basename)
+            if match is None:
+                norm_lut = {_norm(name): f for name, f in by_basename.items()}
+                match = norm_lut.get(_norm(basename)) or norm_lut.get(_norm(basename + ".npy"))
+            if match is None:
+                raise RuntimeError(
+                    f"[representative] group '{g}': candidate '{raw_value}' (basename '{basename}') "
+                    f"does not resolve to any of the {EXPECTED_N} already-loaded, already-validated "
+                    f"volumes in {GROUP_VOLUME_DIRS[g]} -- refusing to use a path outside the "
+                    f"official standardized folder"
+                )
 
-        if phase_col is not None:
-            sub["_phase"] = pd.to_numeric(sub[phase_col], errors="coerce")
-            group_mean_phase = float(sub["_phase"].mean())
-            sub["_phase_diff"] = (sub["_phase"] - group_mean_phase).abs()
-        else:
-            sub["_phase"] = np.nan
-            sub["_phase_diff"] = 0.0
-            group_mean_phase = None
+            vol = volumes_by_group[g][match]
+            stats = component_stats(vol)
+            occupancy = _extent_fill(vol)
 
-        sub["_basename"] = sub[fcol].astype(str).map(lambda v: Path(v).name)
-        sub = sub.sort_values(by=["_score", "_phase_diff", "_basename"],
-                               ascending=[True, True, True], kind="mergesort")
+            d_phi = abs(stats["pore_fraction"] - EXPECTED_PORE_FRACTION[g]) / PORE_FRACTION_TOL
+            d_lcf = abs(stats["largest_component_fraction"] - EXPECTED_LCF[g]) / COMPONENT_TOL
+            d_disc = abs(stats["disconnected_fraction"] - EXPECTED_DISCONNECTED[g]) / COMPONENT_TOL
+            d_axes = (abs(stats["n_percolating_axes"] - EXPECTED_MEAN_PERC_AXES[g]) / COMPONENT_TOL)
+            closeness_score = d_phi + d_lcf + d_disc + d_axes
+            occupancy_penalty = (1.0 - occupancy) * OCCUPANCY_WEIGHT
+            composite = closeness_score + occupancy_penalty
 
-        candidate_audit[g] = [
-            {
-                "filename": row["_basename"],
-                "selection_score": float(row["_score"]),
-                "phase_fraction_pore": (float(row["_phase"]) if np.isfinite(row["_phase"]) else None),
-            }
-            for _, row in sub.iterrows()
-        ]
+            rows.append({
+                "filename": match.name,
+                "selection_score_csv": (float(pd.to_numeric(row[score_col], errors="coerce"))
+                                        if score_col is not None else None),
+                "phase_fraction_pore_csv": (float(pd.to_numeric(row[phase_col], errors="coerce"))
+                                            if phase_col is not None else None),
+                "pore_fraction": stats["pore_fraction"],
+                "largest_component_fraction": stats["largest_component_fraction"],
+                "disconnected_fraction": stats["disconnected_fraction"],
+                "n_percolating_axes": stats["n_percolating_axes"],
+                "extent_fill": occupancy,
+                "closeness_score": closeness_score,
+                "occupancy_penalty": occupancy_penalty,
+                "composite_score": composite,
+                "_path": match,
+            })
 
-        best_row = sub.iloc[0]
-        raw_value = str(best_row[fcol])
-        basename = best_row["_basename"]
-        d = GROUP_VOLUME_DIRS[g]
-        candidates = {f.name: f for f in d.iterdir() if f.is_file() and f.suffix.lower() == ".npy"}
-        match = candidates.get(basename)
-        if match is None:
-            # tolerate a stem-only value (no .npy suffix) or case differences
-            norm_lut = {_norm(name): f for name, f in candidates.items()}
-            match = norm_lut.get(_norm(basename)) or norm_lut.get(_norm(basename + ".npy"))
-        if match is None:
-            raise RuntimeError(f"[representative] group '{g}': selected candidate '{raw_value}' "
-                                f"(basename '{basename}') does not resolve to any file in the "
-                                f"allowed folder {d} -- refusing to use a path outside the "
-                                f"official standardized folders")
-        picked[g] = match
-        log(f"[representative] group '{g}': {len(sub)} candidate rows, selection_score in "
-            f"[{sub['_score'].min():.6g}, {sub['_score'].max():.6g}]"
-            + (f", candidate-set mean phase_fraction_pore={group_mean_phase:.4f}"
-               if group_mean_phase is not None else "")
-            + f" -> chosen '{raw_value}' -> {match}")
+        rows.sort(key=lambda r: (r["composite_score"], r["filename"]))
+        candidate_audit[g] = [{k: v for k, v in r.items() if k != "_path"} for r in rows]
+
+        best = rows[0]
+        picked[g] = best["_path"]
+        log(f"[representative] group '{g}': {len(rows)} candidate rows scored "
+            f"(closeness + {OCCUPANCY_WEIGHT}x occupancy-penalty); chosen '{best['filename']}' "
+            f"composite_score={best['composite_score']:.3f} "
+            f"(closeness={best['closeness_score']:.3f}, extent_fill={best['extent_fill']:.3f})")
     return picked, candidate_audit
 
 
@@ -875,98 +918,118 @@ def load_panel_b_metrics() -> dict:
 
 
 # ---- panel c: pair-connectedness curves (curve_group_means.csv) ----------
+#
+# The previous sawtooth-looking curves were a data-parsing bug, not a
+# rendering one: broad substring matching on the metric column let SOLID-
+# phase pair-connectedness rows leak into what was supposed to be a
+# pore-only curve, interleaving two different curves at the same r values.
+# Fixed by exact equality filtering only -- metric_name == the literal
+# 'pair_connectedness_pore_<axis>' string, phase == 'pore', axis == the
+# literal axis letter -- with a hard failure (printing the offending rows)
+# if duplicate r values remain after that filtering, rather than silently
+# plotting a possibly-mixed curve.
 
 CURVE_GROUP_COL_CANDIDATES = ["group", "set", "model", "class", "category"]
-CURVE_METRIC_COL_CANDIDATES = ["metric", "metric_name", "descriptor", "name", "quantity", "curve", "curve_name"]
+CURVE_METRIC_COL_CANDIDATES = ["metric_name", "metric", "descriptor", "name", "quantity",
+                               "curve", "curve_name"]
+CURVE_PHASE_COL_CANDIDATES = ["phase", "phase_name", "label"]
 CURVE_AXIS_COL_CANDIDATES = ["axis", "direction", "dim", "dimension"]
 CURVE_X_COL_CANDIDATES = ["r", "x", "radius", "distance", "lag", "bin", "bin_center", "coord"]
-CURVE_VALUE_COL_CANDIDATES = ["value", "mean", "mean_value", "y", "y_mean", "pair_connectedness",
+CURVE_VALUE_COL_CANDIDATES = ["mean_value", "mean", "value", "y", "y_mean", "pair_connectedness",
                               "prob", "probability"]
-
-PAIR_CONN_ALIAS_TOKENS = ("paircconnectedness", "pairconnectedness", "porepairconnectedness",
-                          "twopointcluster", "clusterfunction")
 
 
 def load_pair_connectedness_curves() -> dict:
     """Returns {axis_letter: {group: {'x': arr, 'y': arr}}} for x/y/z pore
-    pair-connectedness, resolved from CURVE_GROUP_MEANS only."""
+    pair-connectedness, resolved from CURVE_GROUP_MEANS only, using EXACT
+    metric_name/phase/axis equality (no substring/alias matching)."""
     df = _load_csv(CURVE_GROUP_MEANS)
     log(f"[curves] {CURVE_GROUP_MEANS.name} first rows:\n{df.head(10).to_string()}")
 
-    metric_col = pick_col(df, CURVE_METRIC_COL_CANDIDATES, "curve.metric", required=False)
-    axis_col = pick_col(df, CURVE_AXIS_COL_CANDIDATES, "curve.axis", required=False)
-    x_col = pick_col(df, CURVE_X_COL_CANDIDATES, "curve.x", required=False)
-    value_col = pick_col(df, CURVE_VALUE_COL_CANDIDATES, "curve.value", required=False)
-    group_col = pick_col(df, CURVE_GROUP_COL_CANDIDATES, "curve.group", required=False)
-
-    if metric_col is None or x_col is None or value_col is None:
-        raise RuntimeError(
-            f"[curves] could not resolve required columns from {CURVE_GROUP_MEANS} "
-            f"(metric candidates {CURVE_METRIC_COL_CANDIDATES}, x candidates {CURVE_X_COL_CANDIDATES}, "
-            f"value candidates {CURVE_VALUE_COL_CANDIDATES}). Columns present: {list(df.columns)}. "
-            f"Unique values in likely metric/group/axis columns: "
-            + ", ".join(f"{c}={df[c].unique()[:15].tolist()}" for c in df.columns
-                        if df[c].dtype == object)
-        )
-
-    metric_norm = df[metric_col].astype(str).map(_norm)
+    metric_col = pick_col(df, CURVE_METRIC_COL_CANDIDATES, "curve.metric_name")
+    phase_col = pick_col(df, CURVE_PHASE_COL_CANDIDATES, "curve.phase")
+    axis_col = pick_col(df, CURVE_AXIS_COL_CANDIDATES, "curve.axis")
+    x_col = pick_col(df, CURVE_X_COL_CANDIDATES, "curve.r")
+    value_col = pick_col(df, CURVE_VALUE_COL_CANDIDATES, "curve.value")
+    group_col = pick_col(df, CURVE_GROUP_COL_CANDIDATES, "curve.group")
 
     out = {}
     for axis_letter in ("x", "y", "z"):
-        mask_metric = metric_norm.map(lambda v: any(tok in v for tok in PAIR_CONN_ALIAS_TOKENS))
-        if axis_col is not None:
-            axis_norm = df[axis_col].astype(str).map(_norm)
-            mask_axis = axis_norm.map(lambda v: v == axis_letter or v.startswith(axis_letter))
-        else:
-            mask_axis = metric_norm.map(lambda v: v.endswith(axis_letter) or f"_{axis_letter}_" in v
-                                         or v.endswith(f"{axis_letter}axis"))
-        sub = df[mask_metric & mask_axis].copy()
+        exact_metric_name = f"pair_connectedness_pore_{axis_letter}"
+        mask = (
+            (df[metric_col].astype(str).str.strip() == exact_metric_name)
+            & (df[phase_col].astype(str).str.strip().str.lower() == "pore")
+            & (df[axis_col].astype(str).str.strip().str.lower() == axis_letter)
+        )
+        sub = df[mask].copy()
         if sub.empty:
-            raise RuntimeError(f"[curves] no pair-connectedness rows resolved for axis '{axis_letter}' "
-                                f"in {CURVE_GROUP_MEANS} -- columns: {list(df.columns)}; "
-                                f"sample metric values: {df[metric_col].unique()[:20].tolist()}")
+            raise RuntimeError(
+                f"[curves] no rows matched the exact filter metric_name=='{exact_metric_name}' AND "
+                f"phase=='pore' AND axis=='{axis_letter}' in {CURVE_GROUP_MEANS}. "
+                f"Unique {metric_col} values: {sorted(df[metric_col].astype(str).unique())[:40]}"
+            )
 
+        sub["_group"] = sub[group_col].map(map_group_alias)
         axis_out = {}
-        if group_col is not None:
-            sub["_group"] = sub[group_col].map(map_group_alias)
-            for g in GROUPS:
-                gsub = sub[sub["_group"] == g].sort_values(x_col)
-                if gsub.empty:
-                    raise RuntimeError(f"[curves] axis '{axis_letter}' group '{g}' has no rows in "
-                                        f"{CURVE_GROUP_MEANS}")
-                axis_out[g] = {"x": pd.to_numeric(gsub[x_col], errors="coerce").to_numpy(float),
-                               "y": pd.to_numeric(gsub[value_col], errors="coerce").to_numpy(float)}
-        else:
-            # wide format: separate real/diffusion/gan value columns sharing one x column
-            real_col = pick_col(df, VALUE_COL_ALIASES["real"], "curve.real", required=False)
-            diff_col = pick_col(df, VALUE_COL_ALIASES["diffusion"], "curve.diffusion", required=False)
-            gan_col = pick_col(df, VALUE_COL_ALIASES["gan"], "curve.gan", required=False)
-            if real_col is None or diff_col is None or gan_col is None:
-                raise RuntimeError(f"[curves] {CURVE_GROUP_MEANS} has no group column and no "
-                                    f"real/diffusion/gan value columns either -- cannot resolve "
-                                    f"per-group curves. Columns: {list(df.columns)}")
-            sub = sub.sort_values(x_col)
-            xs = pd.to_numeric(sub[x_col], errors="coerce").to_numpy(float)
-            for g, col in (("real", real_col), ("diffusion", diff_col), ("gan", gan_col)):
-                axis_out[g] = {"x": xs, "y": pd.to_numeric(sub[col], errors="coerce").to_numpy(float)}
-
+        ref_r = None
         for g in GROUPS:
-            if not np.all(np.isfinite(axis_out[g]["x"])) or not np.all(np.isfinite(axis_out[g]["y"])):
-                raise RuntimeError(f"[curves] axis '{axis_letter}' group '{g}': non-finite values "
-                                    f"in resolved curve from {CURVE_GROUP_MEANS}")
-        log(f"[curves] axis '{axis_letter}': resolved {len(sub)} rows from {CURVE_GROUP_MEANS.name}, "
-            f"{ {g: len(axis_out[g]['x']) for g in GROUPS} } points/group")
+            gsub = sub[sub["_group"] == g].copy()
+            if gsub.empty:
+                raise RuntimeError(f"[curves] axis '{axis_letter}' group '{g}': no rows after exact "
+                                    f"metric_name/phase/axis filtering in {CURVE_GROUP_MEANS}")
+
+            gsub["_r"] = pd.to_numeric(gsub[x_col], errors="coerce")
+            if gsub["_r"].isna().any():
+                raise RuntimeError(f"[curves] axis '{axis_letter}' group '{g}': non-numeric '{x_col}' "
+                                    f"values after exact filtering")
+
+            dup_mask = gsub["_r"].duplicated(keep=False)
+            if dup_mask.any():
+                diag_cols = [group_col, metric_col, phase_col, axis_col, x_col, value_col]
+                raise RuntimeError(
+                    f"[curves] axis '{axis_letter}' group '{g}': duplicate '{x_col}' values remain "
+                    f"after exact metric_name/phase/axis filtering -- refusing to plot a possibly-"
+                    f"mixed curve. Stopping without saving. Diagnostic rows:\n"
+                    f"{gsub[diag_cols].sort_values(x_col).to_string(index=False)}"
+                )
+
+            gsub = gsub.sort_values("_r")
+            r_arr = gsub["_r"].to_numpy(float)
+            y_arr = pd.to_numeric(gsub[value_col], errors="coerce").to_numpy(float)
+            if not np.all(np.isfinite(y_arr)):
+                raise RuntimeError(f"[curves] axis '{axis_letter}' group '{g}': non-finite values in "
+                                    f"'{value_col}' after exact filtering")
+
+            if ref_r is None:
+                ref_r = r_arr
+            elif r_arr.shape != ref_r.shape or not np.allclose(r_arr, ref_r):
+                raise RuntimeError(
+                    f"[curves] axis '{axis_letter}': group '{g}' r-grid does not match the other "
+                    f"groups' r-grid -- refusing to plot mismatched-grid curves.\n"
+                    f"this group r={r_arr.tolist()}\nreference r={ref_r.tolist()}"
+                )
+            axis_out[g] = {"x": r_arr, "y": y_arr}
+
+        log(f"[curves] axis '{axis_letter}': exact metric_name='{exact_metric_name}' phase='pore' "
+            f"axis='{axis_letter}' -> {len(ref_r)} r-grid points/group, identical across groups")
         out[axis_letter] = axis_out
     return out
 
 
 # ---- panel c: pair-connectedness RMSE (curve_errors_vs_real.csv) ---------
 #
+# Not shown on the plot any more (a per-subplot RMSE title line was too
+# much text) -- still loaded and sanity-checked here purely for the audit
+# JSON / caption record, since it is official data worth keeping traceable.
+#
 # The official curve-error table is likely LONG format (group, metric/
 # metric_name/descriptor/name/curve/curve_name, optionally phase, optionally
 # axis, and a curve_rmse/rmse/error/curve_error value column) rather than a
 # wide table with separate diffusion_rmse/gan_rmse columns. Long format is
 # tried first; the previous wide-format logic is kept only as a fallback.
+
+PAIR_CONN_ALIAS_TOKENS = ("paircconnectedness", "pairconnectedness", "porepairconnectedness",
+                          "twopointcluster", "clusterfunction")
 
 RMSE_ID_CANDIDATES = ["metric", "descriptor", "name", "curve", "curve_name"]
 RMSE_VALUE_ALIASES = {
@@ -1305,17 +1368,27 @@ def _class_image(v: np.ndarray, labeled: np.ndarray, largest_id, plane: str, ind
     return cls
 
 
-def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw: Path,
+def render_topology_surface(labeled: np.ndarray, largest_id, group: str, out_raw: Path,
                              parallel_scale: float) -> dict:
-    """True marching-cubes isosurface of the largest connected pore
-    component (6-connectivity), rendered from the actual selected NPY
-    volume. Same isosurface-rendering style as Figures 4.1/4.4's
-    render_isosurface (depth-shaded magma colormap, semi-transparent shell,
-    a thin wireframe box in the group color): only the mask being surfaced
-    differs (the connected pore backbone here, vs. a raw material phase in
-    4.1/4.4). Identical camera and parallel scale across all three groups
-    for a fair comparison; the actual on-canvas framing is then produced by
-    finalize_renders' common alpha-crop, exactly as in 4.1/4.4/4.5. No MIP
+    """True marching-cubes isosurfaces of the FULL pore topology (6-
+    connectivity), rendered from the actual selected NPY volume: the
+    largest connected pore component and the disconnected pore fragments
+    as two separate meshes in the same scene, colored with the identical
+    flat categorical colors used for the 2D topology-overlay slices
+    (LARGEST_COMPONENT_COLOR / DISCONNECTED_FRAGMENT_COLOR, the Figure 4.5
+    palette) -- rendering only the largest component made a heavily
+    fragmented group (e.g. IPWGAN) look artificially small/incomplete in
+    3D, even though its pore phase actually fills a normal fraction of the
+    volume once the fragments are included. Camera setup (parallel
+    projection, direction, up vector, wireframe box) matches Figures
+    4.1/4.4's render_isosurface as closely as a two-class scene allows;
+    only the mesh coloring differs (flat per-class colors instead of a
+    single depth-shaded gradient, since a gradient colormap would blend
+    the two topology classes together and defeat the classification this
+    panel exists to show). Identical camera and parallel scale across all
+    three groups for a fair comparison; the actual on-canvas framing is
+    then produced by finalize_renders' common alpha-crop, exactly as in
+    4.1/4.4/4.5 -- never a per-group content-dependent zoom. No MIP
     fallback: if PyVista + scikit-image marching_cubes cannot run, this
     raises and the caller refuses to save the figure."""
     import pyvista as pv
@@ -1328,21 +1401,36 @@ def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw
 
     nz, ny, nx = labeled.shape
     center = np.array([nz / 2.0, ny / 2.0, nx / 2.0])
-    mask = (labeled == largest_id).astype(np.float32)
-    if mask.min() >= 0.5 or mask.max() <= 0.5:
-        raise RuntimeError(f"[render:{group}] largest connected pore component has a degenerate "
-                            f"iso-level (absent or filling the whole volume) -- refusing to render "
-                            f"an empty/solid cell")
 
-    verts, faces, _, _ = measure.marching_cubes(mask, level=0.5)
-    faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
-    mesh = pv.PolyData(verts, faces_pv)
-    mesh["depth"] = verts[:, 0]
+    largest_mask = (labeled == largest_id).astype(np.float32) if largest_id is not None else \
+        np.zeros(labeled.shape, dtype=np.float32)
+    fragment_mask = ((labeled > 0) & (labeled != largest_id)).astype(np.float32)
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
-    pl.add_mesh(mesh, scalars="depth", cmap="magma", opacity=0.90, smooth_shading=True,
-                specular=0.18, specular_power=14, ambient=0.24, diffuse=0.82, show_scalar_bar=False)
+
+    any_mesh = False
+    if largest_mask.max() > 0.5 and largest_mask.min() < 0.5:
+        verts, faces, _, _ = measure.marching_cubes(largest_mask, level=0.5)
+        faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
+        mesh = pv.PolyData(verts, faces_pv)
+        pl.add_mesh(mesh, color=LARGEST_COMPONENT_COLOR, opacity=0.92, smooth_shading=True,
+                    specular=0.18, specular_power=14, ambient=0.26, diffuse=0.82, show_scalar_bar=False)
+        any_mesh = True
+
+    if fragment_mask.max() > 0.5 and fragment_mask.min() < 0.5:
+        verts_f, faces_f, _, _ = measure.marching_cubes(fragment_mask, level=0.5)
+        faces_f_pv = np.hstack([np.full((faces_f.shape[0], 1), 3, np.int64), faces_f.astype(np.int64)])
+        mesh_f = pv.PolyData(verts_f, faces_f_pv)
+        pl.add_mesh(mesh_f, color=DISCONNECTED_FRAGMENT_COLOR, opacity=0.90, smooth_shading=True,
+                    specular=0.12, specular_power=10, ambient=0.34, diffuse=0.78, show_scalar_bar=False)
+        any_mesh = True
+
+    if not any_mesh:
+        raise RuntimeError(f"[render:{group}] neither the largest connected pore component nor the "
+                            f"disconnected fragments have a non-degenerate iso-level -- refusing to "
+                            f"render an empty cell")
+
     # Full [0,nz]x[0,ny]x[0,nx] cube wireframe -- identical extent for every
     # group regardless of data content, matching Figures 4.1/4.2/4.4/4.5.
     pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
@@ -1362,17 +1450,19 @@ def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw
     return {"render_extent": [[0, nz], [0, ny], [0, nx]], "parallel_scale": float(parallel_scale),
             "connectivity": "6-connectivity (face-adjacency), generate_binary_structure(3, 1)",
             "crop_convention": "common alpha bounding-box crop across groups (pad_frac=0.06), "
-                                "matching Figures 4.1/4.4/4.5 finalize_renders"}
+                                "matching Figures 4.1/4.4/4.5 finalize_renders",
+            "renders_full_topology": "largest connected component + disconnected fragments, "
+                                      "both classes, not backbone-only"}
 
 
-def render_group_backbone(labeled, largest_id, group: str, out_raw: Path, parallel_scale: float) -> dict:
+def render_group_topology(labeled, largest_id, group: str, out_raw: Path, parallel_scale: float) -> dict:
     try:
-        return render_backbone_surface(labeled, largest_id, group, out_raw, parallel_scale)
+        return render_topology_surface(labeled, largest_id, group, out_raw, parallel_scale)
     except Exception as exc:
         raise RuntimeError(
-            f"[render:{group}] 3D connected pore-backbone rendering failed and no fallback is "
-            f"permitted for this figure (PyVista + scikit-image marching_cubes are required; "
-            f"PyVista/scikit-image rendering appears unavailable in this environment): {exc}"
+            f"[render:{group}] 3D pore-topology rendering failed and no fallback is permitted for "
+            f"this figure (PyVista + scikit-image marching_cubes are required; PyVista/scikit-image "
+            f"rendering appears unavailable in this environment): {exc}"
         ) from exc
 
 
@@ -1456,18 +1546,8 @@ def build_panel_a(fig, card, rep_data, png_paths):
     for r, name in enumerate(ROW_NAMES):
         a = fig.add_axes([gx0, row_y(r), label_w, cell_h])
         a.axis("off")
-        if r == 0:
-            # Row 0's label cell has ample unused space, so the meaning of
-            # the in-tile chip (a bare slash-separated triplet, matching
-            # the 4.2/4.5 ratio-chip convention) is spelled out here rather
-            # than competing for room in the legend strip below the grid.
-            a.text(0.98, 0.62, name, ha="right", va="center", fontsize=8.8,
-                   fontweight="bold", color=TEXT)
-            a.text(0.98, 0.34, "(φ / LCF / disc)", ha="right", va="center",
-                   fontsize=6.4, style="italic", color=SUBTEXT)
-        else:
-            a.text(0.98, 0.5, name, ha="right", va="center", fontsize=8.8,
-                   fontweight="bold", color=TEXT)
+        a.text(0.98, 0.5, name, ha="right", va="center", fontsize=8.8,
+               fontweight="bold", color=TEXT)
 
     for c, g in enumerate(GROUPS):
         x = gx0 + label_w + gap_x + c * (cell_w + gap_x)
@@ -1476,18 +1556,12 @@ def build_panel_a(fig, card, rep_data, png_paths):
 
         rd = rep_data[g]
 
+        # No per-sample phi/LCF/disc chip in the 3D tile or row label: those
+        # values are kept in the audit JSON only, so the 3D row reads as a
+        # clean rendering rather than a data label under "3D volume".
         a = fig.add_axes([x, row_y(0), cell_w, cell_h])
         a.imshow(Image.open(png_paths[g]), interpolation="bilinear")
         image_cell(a, COLORS[g])
-        # Value chip written INSIDE the 3D-render tile, bottom-left, same
-        # placement/typography/box style as the porosity chip in Figures
-        # 4.1/4.4 and the phase-ratio chip in Figures 4.2/4.5.
-        a.text(0.035, 0.035,
-               f"{rd['pore_fraction']:.2f}/{rd['largest_component_fraction']:.2f}/"
-               f"{rd['disconnected_fraction']:.2f}",
-               transform=a.transAxes, fontsize=6.6, color=SUBTEXT,
-               ha="left", va="bottom",
-               bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.5))
 
         for ri, plane in enumerate(PLANES):
             a = fig.add_axes([x, row_y(ri + 1), cell_w, cell_h])
@@ -1530,61 +1604,203 @@ def build_panel_a(fig, card, rep_data, png_paths):
 # sub-plot only) covers both, exactly as Figure 4.4's panel b does.
 # ============================================================================
 
-B1_METRICS = ["largest_pore_component_fraction", "disconnected_pore_fraction", "mean_percolating_axes"]
-B1_LABELS = ["Largest pore\ncomponent fraction", "Disconnected\npore fraction",
-             "Mean percolating\naxes / 3"]
-
 PERC_AXES_ORDER = ["x", "y", "z"]
 
 
-def plot_backbone_bars(ax, panel_b_metrics):
-    style_axis(ax, grid=True)
-    ax.set_title("Connected pore backbone", pad=5.0, color=TEXT, fontweight="bold")
-    ax.set_xlim(0, 1.12)
-    ax.set_xlabel("Fraction (mean percolating axes shown as value / 3)", color=SUBTEXT)
+def _pchip_display_curve(x: np.ndarray, y: np.ndarray, n: int = 200):
+    """Monotone cubic (PCHIP) interpolation through the true group-mean
+    curve points, evaluated on a dense grid, for DISPLAY smoothness only --
+    it passes exactly through every real data point (no data is invented or
+    altered) and never overshoots between them, unlike a plain spline. The
+    root cause of the earlier sawtooth-looking curves was a data-parsing
+    bug (solid-phase rows leaking into the pore-only curve via substring
+    matching), now fixed at the source in load_pair_connectedness_curves;
+    this interpolation is a secondary, purely cosmetic smoothing layer on
+    top of the now-correct data, not a substitute for that fix."""
+    order = np.argsort(x)
+    xs, ys = np.asarray(x, float)[order], np.asarray(y, float)[order]
+    xs_u, idx = np.unique(xs, return_index=True)
+    if xs_u.size < 3:
+        return xs, ys
+    ys_u = ys[idx]
+    dense_x = np.linspace(xs_u.min(), xs_u.max(), n)
+    dense_y = PchipInterpolator(xs_u, ys_u)(dense_x)
+    return dense_x, dense_y
 
-    ys = np.arange(len(B1_METRICS))
-    offset = {"real": 0.24, "diffusion": 0.0, "gan": -0.24}
-    bar_h = 0.20
-    for mi, key in enumerate(B1_METRICS):
-        r = panel_b_metrics[key]
-        scale = 3.0 if key == "mean_percolating_axes" else 1.0
+
+def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, show_legend=False):
+    style_axis(ax)
+    # No RMSE text on the plot (per design: the visual curve separation is
+    # enough) -- RMSE values are still loaded, sanity-checked, and kept in
+    # the audit JSON / caption, just not rendered as subplot-title text.
+    ax.set_title(f"Pair-connectedness, {axis_letter}", pad=4.0, color=TEXT, fontweight="bold")
+    ax.set_xlabel("Lag (vox)", color=SUBTEXT)
+    ax.set_ylabel("Pair-connectedness", color=SUBTEXT)
+    ax.set_ylim(0, ymax * 1.08)
+
+    for g in GROUPS:
+        d = curve_data[g]
+        xs, ys = _pchip_display_curve(d["x"], d["y"])
+        ax.plot(xs, ys, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
+                solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
+        # Small markers at the true measured lag points -- keeps the curve
+        # legible as real discrete data rather than a purely synthetic line.
+        ax.scatter(d["x"], d["y"], s=9.0, color=COLORS[g], edgecolors="none",
+                   alpha=0.85, zorder=5)
+    ax.margins(x=0.02)
+
+    if show_legend:
+        handles = [Line2D([0], [0], color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g])
+                   for g in GROUPS]
+        leg = ax.legend(handles, [LABELS[g] for g in GROUPS], loc="upper right", frameon=True,
+                        facecolor="white", edgecolor=SPINE, framealpha=0.94, handlelength=2.2,
+                        borderpad=0.4, labelspacing=0.32, fontsize=6.6)
+        leg.get_frame().set_linewidth(0.6)
+        _emphasize_dashed_legend_handle(leg.legend_handles[GROUPS.index("gan")])
+
+
+def build_panel_b(fig, card, curve_data):
+    """Panel b: pore pair-connectedness, three clean mean-curve subplots
+    (x/y/z) stacked in the tall card -- moved here from the previous
+    bars+heatmap composition because curves benefit from real height, and
+    this tall card is exactly what the family gives its curve panels
+    (Figures 4.1/4.4/4.5 panel b)."""
+    bx_, by_, bw_, bh_ = card
+    header_title_y = by_ + bh_ - 0.018
+    plot_top = header_title_y - 0.048
+    pad_l, pad_r, pad_b, gap_y = 0.078, 0.020, 0.058, 0.056
+
+    fig.text(bx_ + 0.014, header_title_y, "Pore pair-connectedness",
+             ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
+
+    plot_bottom = by_ + pad_b
+    total_h = plot_top - plot_bottom
+    plot_h = (total_h - 2 * gap_y) / 3.0
+    plot_w = bw_ - pad_l - pad_r
+
+    ymax = 0.0
+    for axis_letter in ("x", "y", "z"):
         for g in GROUPS:
-            raw = r[g]
-            raw_std = r.get(f"{g}_std", 0.0)
-            plotted, plotted_std = raw / scale, raw_std / scale
-            y = ys[mi] + offset[g]
-            ax.barh(y, plotted, height=bar_h, xerr=plotted_std if plotted_std > 0 else None,
-                    color=COLORS[g], edgecolor="black", linewidth=0.5, zorder=3,
-                    error_kw=dict(ecolor=TEXT, elinewidth=0.9, capsize=1.8))
-            ax.text(min(plotted + plotted_std + 0.025, 1.09), y, f"{raw:.2f}", va="center", ha="left",
-                    fontsize=6.2, color=TEXT, zorder=4)
+            ymax = max(ymax, float(np.nanmax(curve_data[axis_letter][g]["y"])))
 
-    ax.set_yticks(ys)
-    ax.set_yticklabels(B1_LABELS, fontsize=6.8)
-    ax.set_ylim(-0.5, len(B1_METRICS) - 0.5)
+    for i, axis_letter in enumerate(("x", "y", "z")):
+        y = plot_top - (i + 1) * plot_h - i * gap_y
+        ax = fig.add_axes([bx_ + pad_l, y, plot_w, plot_h])
+        plot_pair_connectedness_axis(ax, curve_data[axis_letter], axis_letter, ymax,
+                                      show_legend=(i == 0))
 
-    # Single model legend for all of panel b (the bottom sub-plot carries
-    # none), placed just outside the right axes edge rather than in any
-    # inside corner: every row's bar (mean +/- std) can reach close to the
-    # x=1 edge, so an inside "upper right" legend would risk sitting on top
-    # of the topmost row's bar/error-bar/value label.
-    handles = [Line2D([0], [0], marker="s", linestyle="None", markersize=7,
-                       markerfacecolor=COLORS[g], markeredgecolor="black")
-               for g in GROUPS]
-    leg = ax.legend(handles, [LABELS[g] for g in GROUPS], loc="center left",
-                    bbox_to_anchor=(1.01, 0.5), borderaxespad=0, frameon=True,
-                    facecolor="white", edgecolor=SPINE, framealpha=0.94, handlelength=1.4,
-                    borderpad=0.4, labelspacing=0.9, fontsize=6.6)
-    leg.get_frame().set_linewidth(0.6)
+
+# ============================================================================
+# 12. PANEL C -- wide topology-preservation descriptor dashboard
+#
+# Moved here from the previous curves+network-inset composition because a
+# 4-slot descriptor dashboard (connected-component distributions,
+# directional percolation, network descriptors) reads far better across
+# the full-width bottom card than squeezed into a narrow column. One
+# shared model legend (top-right, Patch-based) covers all four slots,
+# matching Figures 4.1/4.4's panel-c legend convention -- none of the four
+# sub-plots carries its own legend.
+# ============================================================================
+
+DESCRIPTOR_GROUP_ORDER = ["real", "diffusion", "gan"]
+DESCRIPTOR_GROUP_POS = {"real": 2, "diffusion": 1, "gan": 0}
+
+PER_SAMPLE_GROUP_COL_CANDIDATES = GROUP_COL_CANDIDATES
+
+
+def load_per_sample_scalars():
+    """Optional per-sample source for panel-c's C1/C2 distributions. If the
+    file or a recognizable group column is missing, callers fall back to a
+    mean +/- std point (still official data from group_scalar_summary.csv,
+    just a coarser granularity) -- never fake/interpolated per-sample data."""
+    if not PER_SAMPLE_SCALARS.exists():
+        log(f"[panel-c] optional per-sample source not found: {PER_SAMPLE_SCALARS} -- "
+            f"C1/C2 will use mean +/- std from group_scalar_summary.csv instead")
+        return None
+    df = pd.read_csv(PER_SAMPLE_SCALARS)
+    log(f"[panel-c] loaded {PER_SAMPLE_SCALARS}: {df.shape[0]} rows, columns: {list(df.columns)}")
+    gcol = pick_col(df, PER_SAMPLE_GROUP_COL_CANDIDATES, "per_sample.group", required=False)
+    if gcol is None:
+        log(f"[panel-c] {PER_SAMPLE_SCALARS} has no recognizable group column -- "
+            f"falling back to mean +/- std")
+        return None
+    df = df.copy()
+    df["_group"] = df[gcol].map(map_group_alias)
+    return df
+
+
+def plot_descriptor_distribution(ax, per_sample_df, exact_col, title, panel_b_key,
+                                  panel_b_metrics, rng):
+    """C1/C2: per-sample box + jittered strip (same convention as Figure
+    4.1's plot_connectivity_distribution: horizontal box per group, jittered
+    strip, mean diamond, dotted reference-mean line) when an EXACT-named
+    column is available in the official per-sample CSV; otherwise a compact
+    mean +/- std point per group from group_scalar_summary.csv."""
+    style_axis(ax, grid=False)
+    ax.grid(True, axis="x", color=GRID, linewidth=0.55, alpha=0.9)
+    ax.set_axisbelow(True)
+    ax.set_title(title, pad=5.0, color=TEXT, fontweight="bold", fontsize=8.2)
+    ax.set_xlabel("Fraction", color=SUBTEXT, fontsize=7.0, labelpad=3.2)
+    ax.tick_params(axis="x", labelsize=6.6)
+
+    def _finalize_yaxis():
+        ax.set_yticks([DESCRIPTOR_GROUP_POS[g] for g in DESCRIPTOR_GROUP_ORDER])
+        ax.set_yticklabels([LABELS[g] for g in DESCRIPTOR_GROUP_ORDER], fontsize=6.8)
+        ax.set_ylim(-0.66, 2.66)
+
+    col = pick_col(per_sample_df, [exact_col], f"per_sample.{exact_col}",
+                    required=False) if per_sample_df is not None else None
+
+    if col is not None:
+        ref_vals = pd.to_numeric(
+            per_sample_df.loc[per_sample_df["_group"] == "real", col],
+            errors="coerce").dropna().to_numpy(float)
+        if ref_vals.size:
+            ax.axvline(float(np.mean(ref_vals)), color=COLORS["real"], linestyle=(0, (1.4, 1.6)),
+                       linewidth=1.1, zorder=1)
+        for g in DESCRIPTOR_GROUP_ORDER:
+            vals = pd.to_numeric(
+                per_sample_df.loc[per_sample_df["_group"] == g, col],
+                errors="coerce").dropna().to_numpy(float)
+            if vals.size == 0:
+                raise RuntimeError(f"[panel-c] group '{g}' has no valid '{col}' values in "
+                                    f"{PER_SAMPLE_SCALARS}")
+            p = DESCRIPTOR_GROUP_POS[g]
+            bp = ax.boxplot([vals], positions=[p], vert=False, widths=0.50,
+                            patch_artist=True, showfliers=False, zorder=2,
+                            medianprops=dict(color=TEXT, linewidth=1.1),
+                            whiskerprops=dict(color=COLORS[g], linewidth=0.9),
+                            capprops=dict(color=COLORS[g], linewidth=0.9),
+                            boxprops=dict(facecolor=COLORS[g], edgecolor=COLORS[g],
+                                          alpha=0.28, linewidth=0.9))
+            for b in bp["boxes"]:
+                b.set_zorder(2)
+            jitter = p + (rng.random(vals.size) - 0.5) * 0.30
+            ax.scatter(vals, jitter, s=6.5, color=COLORS[g], alpha=0.55, edgecolors="none", zorder=3)
+            ax.scatter([np.mean(vals)], [p], marker="D", s=42, color=COLORS[g],
+                       edgecolors="black", linewidths=0.8, zorder=5)
+        _finalize_yaxis()
+        return
+
+    r = panel_b_metrics[panel_b_key]
+    ax.axvline(r["real"], color=COLORS["real"], linestyle=(0, (1.4, 1.6)), linewidth=1.1, zorder=1)
+    for g in DESCRIPTOR_GROUP_ORDER:
+        p = DESCRIPTOR_GROUP_POS[g]
+        mean_v, std_v = r[g], r.get(f"{g}_std", 0.0)
+        ax.errorbar([mean_v], [p], xerr=[std_v] if std_v > 0 else None, fmt=MARKERS[g],
+                    color=COLORS[g], markerfacecolor=COLORS[g], markeredgecolor="black",
+                    markeredgewidth=0.8, markersize=7.0, ecolor=COLORS[g], elinewidth=1.1,
+                    capsize=2.6, linestyle="None", zorder=5)
+    _finalize_yaxis()
 
 
 def plot_directional_percolation_bars(ax, panel_b_metrics):
     style_axis(ax, grid=False)
     ax.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
     ax.set_axisbelow(True)
-    ax.set_title("Directional percolating pore fraction", pad=5.0, color=TEXT, fontweight="bold")
-    ax.set_ylabel("Percolating pore fraction", color=SUBTEXT)
+    ax.set_title("Directional percolating\npore fraction", pad=5.0, color=TEXT,
+                fontweight="bold", fontsize=8.2)
+    ax.set_ylabel("Percolating pore fraction", color=SUBTEXT, fontsize=7.2)
 
     n_groups = len(GROUPS)
     group_w = 0.72
@@ -1603,87 +1819,8 @@ def plot_directional_percolation_bars(ax, panel_b_metrics):
         max_top = max(max_top, max(m + s for m, s in zip(means, stds)))
 
     ax.set_xticks(xs)
-    ax.set_xticklabels([s.upper() for s in PERC_AXES_ORDER], fontsize=7.6)
+    ax.set_xticklabels([s.upper() for s in PERC_AXES_ORDER], fontsize=7.2)
     ax.set_ylim(0.0, min(1.0, max_top * 1.18) if max_top * 1.18 <= 1.0 else max_top * 1.10)
-
-
-def build_panel_b(fig, card, panel_b_metrics):
-    bx_, by_, bw_, bh_ = card
-    # pad_r leaves room for the outside-right legend in plot_backbone_bars;
-    # "PoreGen/DiffSci" is the longest label, so this is sized for that
-    # string rather than the shorter "PoreGen" used previously.
-    pad_l, pad_r, pad_t, pad_b, gap_y = 0.048, 0.078, 0.026, 0.058, 0.075
-
-    plot_w = bw_ - pad_l - pad_r
-    plot_h = (bh_ - pad_t - pad_b - gap_y) / 2.0
-
-    ax_top = fig.add_axes([bx_ + pad_l, by_ + bh_ - pad_t - plot_h, plot_w, plot_h])
-    ax_bot = fig.add_axes([bx_ + pad_l, by_ + pad_b, plot_w, plot_h])
-
-    plot_backbone_bars(ax_top, panel_b_metrics)
-    plot_directional_percolation_bars(ax_bot, panel_b_metrics)
-
-
-# ============================================================================
-# 12. PANEL C -- pair-connectedness mechanism + network-integrity summaries
-# ============================================================================
-
-AXIS_TITLES = {"x": "Pair-connectedness, x", "y": "Pair-connectedness, y", "z": "Pair-connectedness, z"}
-
-
-def _pchip_display_curve(x: np.ndarray, y: np.ndarray, n: int = 200):
-    """Monotone cubic (PCHIP) interpolation through the true group-mean
-    curve points, evaluated on a dense grid, for DISPLAY smoothness only --
-    it passes exactly through every real data point (no data is invented or
-    altered) and never overshoots between them, unlike a plain spline. This
-    replaces the raw point-to-point polyline, whose lag-to-lag sampling
-    noise otherwise reads as an ugly sawtooth. RMSE values in the subplot
-    title are computed upstream from the original, unsmoothed curve
-    values -- this function is never used for anything but the plotted
-    line."""
-    order = np.argsort(x)
-    xs, ys = np.asarray(x, float)[order], np.asarray(y, float)[order]
-    xs_u, idx = np.unique(xs, return_index=True)
-    if xs_u.size < 3:
-        return xs, ys
-    ys_u = ys[idx]
-    dense_x = np.linspace(xs_u.min(), xs_u.max(), n)
-    dense_y = PchipInterpolator(xs_u, ys_u)(dense_x)
-    return dense_x, dense_y
-
-
-def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, rmse_row, show_legend=False):
-    style_axis(ax)
-    # RMSE folded directly into the subplot title (two lines) instead of a
-    # separate text box, so the panel communicates through the plotted
-    # curves rather than a block of standalone commentary.
-    title = (f"{AXIS_TITLES[axis_letter]}\n"
-             f"RMSE  {LABELS['diffusion']} {rmse_row['diffusion']:.4f}  |  "
-             f"{LABELS['gan']} {rmse_row['gan']:.4f}")
-    ax.set_title(title, pad=4.0, color=TEXT, fontweight="bold", fontsize=7.0, linespacing=1.6)
-    ax.set_xlabel("Lag (vox)", color=SUBTEXT)
-    ax.set_ylabel("Pair-connectedness", color=SUBTEXT)
-    ax.set_ylim(0, ymax * 1.08)
-
-    for g in GROUPS:
-        d = curve_data[g]
-        xs, ys = _pchip_display_curve(d["x"], d["y"])
-        ax.plot(xs, ys, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
-                solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
-        # Small markers at the true measured lag points -- keeps the curve
-        # legible as real discrete data rather than a purely synthetic line.
-        ax.scatter(d["x"], d["y"], s=8.0, color=COLORS[g], edgecolors="none",
-                   alpha=0.85, zorder=5)
-    ax.margins(x=0.02)
-
-    if show_legend:
-        handles = [Line2D([0], [0], color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g])
-                   for g in GROUPS]
-        leg = ax.legend(handles, [LABELS[g] for g in GROUPS], loc="upper right", frameon=True,
-                        facecolor="white", edgecolor=SPINE, framealpha=0.94, handlelength=2.2,
-                        borderpad=0.4, labelspacing=0.32, fontsize=6.6)
-        leg.get_frame().set_linewidth(0.6)
-        _emphasize_dashed_legend_handle(leg.legend_handles[GROUPS.index("gan")])
 
 
 def plot_network_summary(ax, advanced_metrics):
@@ -1691,25 +1828,25 @@ def plot_network_summary(ax, advanced_metrics):
     network descriptors in ONE compact panel -- an errorbar/marker plot
     rather than a scatter with floating per-point value text (matching the
     Figure 4.5 panel-c 'fragmentation' marker-summary convention), with a
-    twin y-axis for SNOW coordination number so that a descriptor living on
-    a different scale (~1-3) than a largest-component fraction (0-1) can
-    still share one categorical x-axis and one title/legend instead of a
-    second full sub-plot competing for panel c's limited height budget."""
+    twin y-axis for SNOW coordination number so a descriptor living on a
+    different scale (~1-3) than a largest-component fraction (0-1) can
+    still share one categorical x-axis without a second sub-plot. Never
+    called permeability anywhere in labels/titles."""
     style_axis(ax, grid=True)
-    ax.set_title("Extracted-network connectivity", pad=4.0, color=TEXT, fontweight="bold")
-    ax.set_ylabel("Largest-component fraction", color=SUBTEXT)
+    ax.set_title("Extracted-network\nconnectivity", pad=4.0, color=TEXT, fontweight="bold", fontsize=8.2)
+    ax.set_ylabel("Largest-component fraction", color=SUBTEXT, fontsize=7.2)
     ax.set_ylim(0, 1.12)
 
     lcf_keys = ["skeleton_graph_largest_component_fraction", "snow_graph_largest_component_fraction"]
-    xlabels = ["Skeleton\ngraph LCF", "SNOW\ngraph LCF", "SNOW mean\ncoordination"]
+    xlabels = ["Skeleton\nLCF", "SNOW\nLCF", "SNOW\ncoord."]
     xs = np.arange(len(xlabels))
     offset = {"real": -0.20, "diffusion": 0.0, "gan": 0.20}
 
     ax2 = ax.twinx()
-    ax2.set_ylabel("Coordination number", color=SUBTEXT)
+    ax2.set_ylabel("Coordination number", color=SUBTEXT, fontsize=7.2)
     for sp in ax2.spines.values():
         sp.set_visible(False)
-    ax2.tick_params(colors=SUBTEXT, labelcolor=SUBTEXT)
+    ax2.tick_params(colors=SUBTEXT, labelcolor=SUBTEXT, labelsize=6.2)
 
     coord = advanced_metrics["snow_coordination_number"]
     coord_vals = np.array([coord[g] for g in GROUPS])
@@ -1722,66 +1859,69 @@ def plot_network_summary(ax, advanced_metrics):
         stds = np.array([advanced_metrics[k].get(f"{g}_std", 0.0) for k in lcf_keys])
         ax.errorbar(xs[:2] + offset[g], vals, yerr=stds, fmt=MARKERS[g], color=COLORS[g],
                     markerfacecolor=COLORS[g], markeredgecolor="black", markeredgewidth=0.8,
-                    markersize=6.5, ecolor=COLORS[g], elinewidth=1.1, capsize=2.4,
-                    linestyle="None", zorder=5, label=LABELS[g])
+                    markersize=6.0, ecolor=COLORS[g], elinewidth=1.0, capsize=2.2,
+                    linestyle="None", zorder=5)
         ax2.errorbar([xs[2] + offset[g]], [coord[g]], yerr=[coord.get(f"{g}_std", 0.0)],
                      fmt=MARKERS[g], color=COLORS[g], markerfacecolor=COLORS[g],
-                     markeredgecolor="black", markeredgewidth=0.8, markersize=6.5,
-                     ecolor=COLORS[g], elinewidth=1.1, capsize=2.4, linestyle="None", zorder=5)
+                     markeredgecolor="black", markeredgewidth=0.8, markersize=6.0,
+                     ecolor=COLORS[g], elinewidth=1.0, capsize=2.2, linestyle="None", zorder=5)
 
     # A faint separator between the LCF pair and the coordination-number
     # category makes the axis switch (left scale -> right scale) legible
-    # at a glance rather than only inferable from the legend/axis labels.
+    # at a glance rather than only inferable from the axis labels.
     ax.axvline(1.62, color=SPINE, linewidth=0.8, linestyle=(0, (2.0, 1.6)), zorder=1)
 
     ax.set_xticks(xs)
     ax.set_xticklabels(xlabels, fontsize=6.4)
     ax.set_xlim(-0.55, len(xlabels) - 0.45)
 
-    leg = ax.legend(loc="lower left", frameon=True, facecolor="white", edgecolor=SPINE,
-                    framealpha=0.94, handlelength=1.3, borderpad=0.4, labelspacing=0.35,
-                    fontsize=6.2, ncol=1, handletextpad=0.4)
-    leg.get_frame().set_linewidth(0.6)
-    leg.set_zorder(8)
 
-
-def build_panel_c(fig, card, curve_data, rmse_data, advanced_metrics):
+def build_panel_c(fig, card, panel_b_metrics, advanced_metrics, per_sample_df):
     cx_, cy_, cw_, ch_ = card
-    header_title_y = cy_ + ch_ - 0.018
-    plot_top = header_title_y - 0.062
-    pad_l, pad_r, pad_b = 0.040, 0.020, 0.075
+    header_title_y = cy_ + ch_ - 0.020
+    plot_top = header_title_y - 0.058
+    pad_l, pad_r, pad_b, gap_x = 0.045, 0.020, 0.052, 0.028
 
-    fig.text(cx_ + 0.014, header_title_y, "Pore pair-connectedness and network integrity",
+    fig.text(cx_ + 0.014, header_title_y, "Topology-preservation descriptors",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
+
+    # Single shared model legend for the whole panel (same Patch-based,
+    # top-right pattern as Figures 4.1/4.4's panel c) -- none of the four
+    # sub-plots below repeats it.
+    legend_handles = [Patch(facecolor=COLORS[g], edgecolor=COLORS[g], alpha=0.85, label=LABELS[g])
+                      for g in GROUPS]
+    fig.legend(handles=legend_handles, loc="upper right",
+              bbox_to_anchor=(cx_ + cw_ - 0.010, header_title_y + 0.006),
+              bbox_transform=fig.transFigure, ncol=3, frameon=True,
+              facecolor="white", edgecolor=SPINE, framealpha=0.94,
+              borderpad=0.45, labelspacing=0.3, columnspacing=1.1,
+              handlelength=1.4, handletextpad=0.5, fontsize=7.4).get_frame().set_linewidth(0.6)
 
     plot_bottom = cy_ + pad_b
     plot_h = plot_top - plot_bottom
+    plot_w = (cw_ - pad_l - pad_r - 3 * gap_x) / 4.0
 
-    curves_w = 0.62 * (cw_ - pad_l - pad_r)
-    gap = 0.018
-    curve_plot_w = (curves_w - 2 * gap) / 3.0
+    rng = np.random.default_rng(11)
 
-    ymax = 0.0
-    for axis_letter in ("x", "y", "z"):
-        for g in GROUPS:
-            ymax = max(ymax, float(np.nanmax(curve_data[axis_letter][g]["y"])))
+    x0 = cx_ + pad_l
+    ax_c1 = fig.add_axes([x0, plot_bottom, plot_w, plot_h])
+    plot_descriptor_distribution(ax_c1, per_sample_df, "largest_component_fraction_pore",
+                                  "Largest connected\npore-component fraction",
+                                  "largest_pore_component_fraction", panel_b_metrics, rng)
 
-    for i, axis_letter in enumerate(("x", "y", "z")):
-        x = cx_ + pad_l + i * (curve_plot_w + gap)
-        ax = fig.add_axes([x, plot_bottom, curve_plot_w, plot_h])
-        plot_pair_connectedness_axis(ax, curve_data[axis_letter], axis_letter, ymax,
-                                      rmse_data[axis_letter], show_legend=(i == 2))
+    x1 = x0 + plot_w + gap_x
+    ax_c2 = fig.add_axes([x1, plot_bottom, plot_w, plot_h])
+    plot_descriptor_distribution(ax_c2, per_sample_df, "disconnected_fraction_pore",
+                                  "Disconnected\npore fraction",
+                                  "disconnected_pore_fraction", panel_b_metrics, rng)
 
-    # Right column: one combined point/range summary of all three
-    # supplementary skeleton/SNOW descriptors (twin y-axis for the
-    # differently-scaled coordination number), given the panel's full
-    # height budget -- two separately-titled stacked sub-plots were tried
-    # first but panel c's height is too tight for two full title+axis
-    # blocks without their text colliding.
-    right_x = cx_ + pad_l + curves_w + 0.028
-    right_w = cx_ + cw_ - pad_r - right_x
-    ax_net = fig.add_axes([right_x, plot_bottom, right_w, plot_h])
-    plot_network_summary(ax_net, advanced_metrics)
+    x2 = x1 + plot_w + gap_x
+    ax_c3 = fig.add_axes([x2, plot_bottom, plot_w, plot_h])
+    plot_directional_percolation_bars(ax_c3, panel_b_metrics)
+
+    x3 = x2 + plot_w + gap_x
+    ax_c4 = fig.add_axes([x3, plot_bottom, plot_w, plot_h])
+    plot_network_summary(ax_c4, advanced_metrics)
 
 
 # ============================================================================
@@ -1826,8 +1966,8 @@ def main():
         check_component_sanity(g, comp_means)
         log(f"[data:{g}] direct component means: {comp_means}")
 
-    # ---- representative selection (official CSV only) ---------------------
-    representative_files, representative_candidates = load_representative_selection()
+    # ---- representative selection (official CSV only, composite score) ----
+    representative_files, representative_candidates = select_representative_samples(volumes_by_group)
 
     rep_data = {}
     for g in GROUPS:
@@ -1860,13 +2000,13 @@ def main():
             "slice_index": slice_index, "slice_info": slice_info,
         }
 
-    # ---- panel a: 3D connected pore-backbone renders (fixed, fair protocol) ---
+    # ---- panel a: 3D full-topology renders (fixed, fair protocol) ---------
     parallel_scale = 0.82 * max(max(rep_data[g]["vol"].shape) for g in GROUPS)
     raw_paths = {g: TMP / f"raw_{g}.png" for g in GROUPS}
     png_paths = {g: TMP / f"render_{g}.png" for g in GROUPS}
     render_audit = {}
     for g in GROUPS:
-        render_audit[g] = render_group_backbone(rep_data[g]["labeled"], rep_data[g]["largest_id"],
+        render_audit[g] = render_group_topology(rep_data[g]["labeled"], rep_data[g]["largest_id"],
                                                  g, raw_paths[g], parallel_scale)
         log(f"[panel-a-audit:{g}] render_extent={render_audit[g]['render_extent']}  "
             f"parallel_scale={render_audit[g]['parallel_scale']:.4f}  "
@@ -1875,16 +2015,20 @@ def main():
     log("Panel a crop/zoom used: common alpha bounding-box crop across groups "
         "(pad_frac=0.06), matching Figures 4.1/4.4/4.5")
 
-    # ---- panel b: official scalar metrics (group_scalar_summary.csv only,
-    # long-format, exact metric-name rows -- see resolve_long_group_metric) --
+    # ---- shared descriptor metrics (panel b/c both draw on this) -----------
+    # official scalar metrics (group_scalar_summary.csv only, long-format,
+    # exact metric-name rows -- see resolve_long_group_metric)
     panel_b_metrics = load_panel_b_metrics()
 
-    # ---- panel c: curves, rmse, advanced metrics ---------------------------
+    # panel b: pair-connectedness curves + RMSE (RMSE kept for audit/caption
+    # only, no longer rendered on the plot)
     curve_data = load_pair_connectedness_curves()
     rmse_data = load_pair_connectedness_rmse()
 
-    # advanced_group_summary.csv only, same long-format exact-row resolution
+    # panel c: advanced_group_summary.csv (network descriptors) and the
+    # optional per-sample source for C1/C2 distributions
     advanced_metrics = load_advanced_metrics()
+    per_sample_df = load_per_sample_scalars()
 
     # ---- canvas -------------------------------------------------------------
     fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=BG)
@@ -1899,8 +2043,8 @@ def main():
     add_panel_label(fig, card_c[0] + 0.007, card_c[1] + card_c[3] + PANEL_LABEL_OFFSET, "c)")
 
     build_panel_a(fig, card_a, rep_data, png_paths)
-    build_panel_b(fig, card_b, panel_b_metrics)
-    build_panel_c(fig, card_c, curve_data, rmse_data, advanced_metrics)
+    build_panel_b(fig, card_b, curve_data)
+    build_panel_c(fig, card_c, panel_b_metrics, advanced_metrics, per_sample_df)
 
     # =========================== SAVE ========================================
     png = OUT / f"{STEM}.png"
