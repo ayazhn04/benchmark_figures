@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 Figure 4.6 composite (topology preservation, final)
-Reference vs PoreGen (diffusion) vs IPWGAN (gan) -- NMC 90 wt% 0 bar binary
-porous-network topology preservation.
+Reference vs PoreGen/DiffSci (diffusion) vs IPWGAN (gan) -- NMC 90 wt% 0 bar
+binary porous-network topology preservation.
 
 Same visual contract as Figures 4.1-4.5 (make_fig4_1_composite_magma_final.py
 .. make_fig4_5_composite_magma_final.py): same cards, fonts, panel-label
-style, export block. No tight_layout / constrained_layout / bbox_inches.
+style, export block, panel-a render style (depth-shaded magma isosurface,
+common alpha-crop framing), and panel-a slice-overlay palette convention
+(the flat, high-contrast three-color language introduced in Figure 4.5's
+PHASE_COLORS). No tight_layout / constrained_layout / bbox_inches.
 
 Only the exact official standardized 128^3 binary volume folders and the
 exact official 4.6_FINAL_100100_PACKAGE metric CSVs are used -- no broad
@@ -15,15 +18,18 @@ path search, no WRONG_12_40 / BACKUP folders, no raw HDF5 GAN files, no
 non-final diagnostic outputs. Extensive hard sanity checks raise and
 refuse to save rather than silently substituting or faking data.
 
-Panel a shows representative orthogonal (XY/XZ/YZ) slices with a
-topology-class overlay (solid / largest connected pore component /
-disconnected pore fragments), selected by an official representative CSV
-and a deterministic, content-aware slice search. Panel b is a connected-
-backbone and percolation dashboard (grouped bars + a directional
-percolation heatmap). Panel c shows the pore pair-connectedness mechanism
-(three mini-curves from the official curve_group_means.csv) plus a
-supplementary skeleton/SNOW network-integrity inset. No interpretive
-sentences beyond the one restrained annotation specified for panel b.
+Panel a shows a true 3D isosurface of the largest connected pore backbone
+plus representative orthogonal (XY/XZ/YZ) slices with a topology-class
+overlay (solid / largest connected pore component / disconnected pore
+fragments), selected by an official representative CSV and a
+deterministic, content-aware slice search. Panel b is a connected-backbone
+and directional-percolation dashboard (two grouped bar charts, mean +/-
+std where the official summary provides std). Panel c shows the pore
+pair-connectedness mechanism (three PCHIP-smoothed mean curves from the
+official curve_group_means.csv, RMSE folded into each subplot title) plus
+a compact point/range summary of the supplementary skeleton/SNOW network
+descriptors. No interpretive sentences anywhere in the figure -- it
+communicates entirely through data.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from scipy import ndimage
+from scipy.interpolate import PchipInterpolator
 
 import matplotlib
 matplotlib.use("Agg")
@@ -112,18 +119,19 @@ FIG_W, FIG_H = 17.8, 10.2
 CAPTION_TEXT = (
     "Figure 4.6. Qualitative and descriptor-level comparison for the "
     "topology-preservation task. (a) Representative 3D renderings and "
-    "orthogonal XY, XZ, and YZ slices from real validation samples, PoreGen "
-    "diffusion outputs, and IPWGAN outputs, with the largest connected pore "
-    "backbone and disconnected pore fragments highlighted using the same "
-    "6-connectivity convention as the topology metrics. (b) Connected-backbone "
-    "and spanning-path descriptors, including largest pore-component fraction, "
-    "disconnected pore fraction, mean percolating axes, and directional "
-    "percolating pore fractions. (c) Pore pair-connectedness curves and "
-    "supplementary skeleton/SNOW network descriptors showing preservation "
-    "or fragmentation of long-range pore connectivity. The figure shows "
-    "that visual plausibility alone is insufficient: PoreGen remains close "
-    "to the real connected-pore structure, whereas IPWGAN produces "
-    "valid-looking but substantially fragmented pore networks."
+    "orthogonal XY, XZ, and YZ slices from real validation samples, "
+    "PoreGen/DiffSci diffusion outputs, and IPWGAN outputs, with the largest "
+    "connected pore backbone and disconnected pore fragments highlighted "
+    "using the same 6-connectivity convention as the topology metrics. "
+    "(b) Connected-backbone and spanning-path descriptors, including largest "
+    "pore-component fraction, disconnected pore fraction, mean percolating "
+    "axes, and directional percolating pore fractions. (c) Pore "
+    "pair-connectedness curves and supplementary skeleton/SNOW network "
+    "descriptors showing preservation or fragmentation of long-range pore "
+    "connectivity. The figure shows that visual plausibility alone is "
+    "insufficient: PoreGen/DiffSci remains close to the real connected-pore "
+    "structure, whereas IPWGAN produces valid-looking but substantially "
+    "fragmented pore networks."
 )
 
 # ============================================================================
@@ -218,7 +226,7 @@ TEXT = "#1A0F2B"
 SUBTEXT = "#59496A"
 
 COLORS = {"real": "#8C93A1", "diffusion": "#F2A93B", "gan": "#772A8E"}
-LABELS = {"real": "Reference", "diffusion": "PoreGen", "gan": "IPWGAN"}
+LABELS = {"real": "Reference", "diffusion": "PoreGen/DiffSci", "gan": "IPWGAN"}
 MARKERS = {"real": "o", "diffusion": "D", "gan": "^"}
 TITLE_COLOR = {"real": TEXT, "diffusion": COLORS["diffusion"], "gan": COLORS["gan"]}
 LINESTYLES = {"real": "-", "diffusion": "-", "gan": (0, (6.5, 2.6))}
@@ -235,10 +243,14 @@ CELL_LW = 1.6
 
 # Topology overlay palette for panel a -- these mean topology CLASS, never
 # model identity: solid phase, largest connected pore backbone, and
-# disconnected pore fragments.
-SOLID_COLOR = "#17121C"
-LARGEST_COMPONENT_COLOR = "#F2A93B"
-DISCONNECTED_FRAGMENT_COLOR = "#19D3E6"
+# disconnected pore fragments. Reuses Figure 4.5's PHASE_COLORS triplet
+# verbatim (flat, high-contrast, non-decorative-gradient categorical colors,
+# deliberately chosen to stay readable under 3D lighting) rather than an
+# ad hoc palette, so the "three flat categorical colors" visual language is
+# shared across the figure series.
+SOLID_COLOR = "#3C1A5B"
+LARGEST_COMPONENT_COLOR = "#E0792A"
+DISCONNECTED_FRAGMENT_COLOR = "#F5E27A"
 TOPO_CLASS_NAMES = ["Solid", "Largest connected pore component", "Disconnected pore fragments"]
 TOPO_CMAP = ListedColormap([SOLID_COLOR, LARGEST_COMPONENT_COLOR, DISCONNECTED_FRAGMENT_COLOR])
 
@@ -719,11 +731,15 @@ def resolve_long_group_metric(df: pd.DataFrame, metric_name: str, expected: dict
     resolves exactly one row per group for an EXACT metric name (no
     substring/alias fuzzy matching, which is how 'largest_component_fraction'
     previously collided with the skeleton/SNOW/solid variants) and reads the
-    value from the 'mean' column."""
+    value from the 'mean' column. Also captures the 'std' column when
+    present (out['<group>_std']), for genuine error-bar display in panel b
+    -- never a fabricated uncertainty, only what the official summary
+    itself reports across its N samples."""
     required = {"group", "metric", "mean"}
     missing = required - set(df.columns)
     if missing:
         raise RuntimeError(f"[metrics] {GROUP_SCALAR_SUMMARY} missing columns: {missing}")
+    has_std = "std" in df.columns
 
     sub = df[df["metric"].astype(str) == metric_name].copy()
     if sub.empty:
@@ -741,6 +757,7 @@ def resolve_long_group_metric(df: pd.DataFrame, metric_name: str, expected: dict
                 f"{len(rows)}. Rows were: {sub[['group', 'metric', 'mean']].to_string(index=False)}"
             )
         out[g] = float(rows.iloc[0]["mean"])
+        out[f"{g}_std"] = float(rows.iloc[0]["std"]) if has_std else 0.0
 
     log(f"[metrics] '{metric_name}' resolved from {GROUP_SCALAR_SUMMARY.name}: "
         f"real={out['real']:.6g} diffusion={out['diffusion']:.6g} gan={out['gan']:.6g}")
@@ -1143,6 +1160,7 @@ def _rows_for_exact_metric(df: pd.DataFrame, metric_name: str) -> pd.DataFrame:
 
 
 def _values_from_metric_rows(sub: pd.DataFrame, label: str, source_metric: str) -> dict:
+    has_std = "std" in sub.columns
     out = {"raw_name": source_metric, "source": str(ADVANCED_GROUP_SUMMARY)}
     for g in GROUPS:
         rows = sub[sub["_group"] == g]
@@ -1153,6 +1171,11 @@ def _values_from_metric_rows(sub: pd.DataFrame, label: str, source_metric: str) 
                 f"{sub[['group','metric','mean']].to_string(index=False)}"
             )
         out[g] = float(pd.to_numeric(rows.iloc[0]["mean"], errors="coerce"))
+        # Genuine mean +/- std for panel c's point/range display -- read
+        # straight from the official summary's own 'std' column when
+        # present, never fabricated.
+        out[f"{g}_std"] = (float(pd.to_numeric(rows.iloc[0]["std"], errors="coerce"))
+                            if has_std else 0.0)
     return out
 
 
@@ -1246,7 +1269,7 @@ def load_advanced_metrics() -> dict:
 # 10. PANEL A -- topology-aware representative slices + 3D backbone render
 #
 # Same overall panel-a grid logic as Figures 4.1/4.2/4.4/4.5: columns are
-# groups (Reference | PoreGen | IPWGAN), rows are {3D volume, X-Y slice,
+# groups (Reference | PoreGen/DiffSci | IPWGAN), rows are {3D volume, X-Y slice,
 # X-Z slice, Y-Z slice}. The 3D row is a true marching-cubes isosurface of
 # the largest connected pore component (6-connectivity, same convention as
 # every other topology computation in this script) rendered from the
@@ -1286,8 +1309,13 @@ def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw
                              parallel_scale: float) -> dict:
     """True marching-cubes isosurface of the largest connected pore
     component (6-connectivity), rendered from the actual selected NPY
-    volume. Identical camera, extent, and parallel scale across all three
-    groups (no content-dependent cropping) for a fair comparison. No MIP
+    volume. Same isosurface-rendering style as Figures 4.1/4.4's
+    render_isosurface (depth-shaded magma colormap, semi-transparent shell,
+    a thin wireframe box in the group color): only the mask being surfaced
+    differs (the connected pore backbone here, vs. a raw material phase in
+    4.1/4.4). Identical camera and parallel scale across all three groups
+    for a fair comparison; the actual on-canvas framing is then produced by
+    finalize_renders' common alpha-crop, exactly as in 4.1/4.4/4.5. No MIP
     fallback: if PyVista + scikit-image marching_cubes cannot run, this
     raises and the caller refuses to save the figure."""
     import pyvista as pv
@@ -1309,17 +1337,16 @@ def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw
     verts, faces, _, _ = measure.marching_cubes(mask, level=0.5)
     faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
     mesh = pv.PolyData(verts, faces_pv)
+    mesh["depth"] = verts[:, 0]
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
-    pl.add_mesh(mesh, color=LARGEST_COMPONENT_COLOR, opacity=1.0, smooth_shading=True,
-                specular=0.24, specular_power=20, ambient=0.30, diffuse=0.80, show_scalar_bar=False)
+    pl.add_mesh(mesh, scalars="depth", cmap="magma", opacity=0.90, smooth_shading=True,
+                specular=0.18, specular_power=14, ambient=0.24, diffuse=0.82, show_scalar_bar=False)
     # Full [0,nz]x[0,ny]x[0,nx] cube wireframe -- identical extent for every
-    # group regardless of data content, so the rendered scale is fair by
-    # construction rather than by post-hoc cropping (same convention as
-    # Figures 4.1/4.2/4.4/4.5).
+    # group regardless of data content, matching Figures 4.1/4.2/4.4/4.5.
     pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
-                color=COLORS[group], line_width=2.2, opacity=0.60)
+                color=COLORS[group], line_width=2.2, opacity=0.55)
 
     pl.enable_parallel_projection()
     direction = np.array([1.0, -1.30, 0.90])
@@ -1333,7 +1360,9 @@ def render_backbone_surface(labeled: np.ndarray, largest_id, group: str, out_raw
     pl.close()
 
     return {"render_extent": [[0, nz], [0, ny], [0, nx]], "parallel_scale": float(parallel_scale),
-            "connectivity": "6-connectivity (face-adjacency), generate_binary_structure(3, 1)"}
+            "connectivity": "6-connectivity (face-adjacency), generate_binary_structure(3, 1)",
+            "crop_convention": "common alpha bounding-box crop across groups (pad_frac=0.06), "
+                                "matching Figures 4.1/4.4/4.5 finalize_renders"}
 
 
 def render_group_backbone(labeled, largest_id, group: str, out_raw: Path, parallel_scale: float) -> dict:
@@ -1347,17 +1376,48 @@ def render_group_backbone(labeled, largest_id, group: str, out_raw: Path, parall
         ) from exc
 
 
-def finalize_renders(raw_paths: dict, out_paths: dict):
-    """Identical, content-independent resize for every group -- NO alpha
-    bounding-box crop, NO per-group foreground zoom. The camera, parallel
-    scale, and full [0,128]^3 wireframe cube are already identical across
-    groups, so a plain uniform resize is the fair operation."""
+def finalize_renders(raw_paths: dict, out_paths: dict, pad_frac: float = 0.06):
+    """Common alpha bounding-box crop across ALL groups -> identical scale
+    and centring, exactly the same function used by Figures 4.1/4.4/4.5.
+    The crop box is the union of every group's non-transparent pixels (mesh
+    + wireframe box), so no single group is cropped tighter or looser than
+    another; a small shared padding then keeps the isosurface from touching
+    the cell edge. This replaces the previous plain full-canvas resize,
+    which left the smaller/fragmented IPWGAN backbone looking tiny inside a
+    mostly-empty tile and made the framing feel inconsistent with the rest
+    of the figure series."""
+    ims = {g: Image.open(p).convert("RGBA") for g, p in raw_paths.items()}
+    boxes = []
+    for im in ims.values():
+        a = np.asarray(im)[:, :, 3]
+        m = a > 5
+        if m.any():
+            ys, xs = np.where(m)
+            boxes.append((xs.min(), ys.min(), xs.max(), ys.max()))
+    if not boxes:
+        boxes = [(0, 0, list(ims.values())[0].size[0] - 1, list(ims.values())[0].size[1] - 1)]
+
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    x1 = max(b[2] for b in boxes)
+    y1 = max(b[3] for b in boxes)
+
+    pad = int(round(pad_frac * max(x1 - x0, y1 - y0))) + 6
+    side = max(x1 - x0, y1 - y0) + 2 * pad
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
     rs = _resample()
-    for g, raw_path in raw_paths.items():
-        im = Image.open(raw_path).convert("RGBA")
-        canvas = Image.new("RGBA", im.size, (255, 255, 255, 255))
-        canvas.alpha_composite(im)
-        canvas = canvas.resize((CANVAS_PX, CANVAS_PX), rs)
+    for g, im in ims.items():
+        W, H = im.size
+        L = int(round(cx - side / 2.0))
+        T = int(round(cy - side / 2.0))
+        crop = Image.new("RGBA", (side, side), (255, 255, 255, 0))
+        sx0, sy0 = max(L, 0), max(T, 0)
+        sx1, sy1 = min(L + side, W), min(T + side, H)
+        crop.alpha_composite(im.crop((sx0, sy0, sx1, sy1)), (sx0 - L, sy0 - T))
+        crop = crop.resize((CANVAS_PX, CANVAS_PX), rs)
+        canvas = Image.new("RGBA", (CANVAS_PX, CANVAS_PX), (255, 255, 255, 255))
+        canvas.alpha_composite(crop)
         canvas.convert("RGB").save(out_paths[g])
 
 
@@ -1369,12 +1429,18 @@ def _resample():
 
 
 def build_panel_a(fig, card, rep_data, png_paths):
+    # Identical geometry constants to the panel-a grid in Figures
+    # 4.1/4.2/4.4/4.5 (same card_a, same pad/label/gap values), including
+    # the "3 * gap_x" free-width accounting for the 3 gaps in the row
+    # (label->col0, col0->col1, col1->col2) -- a previous version of this
+    # panel used "2 * gap_x" here, which happened to be harmless only
+    # because the grid was already height-bound, but diverged from the
+    # family's own formula.
     ax_, ay_, aw_, ah_ = card
-    pad_x, pad_top, pad_bot = 0.016, 0.088, 0.056
+    pad_x, pad_top, pad_bot = 0.016, 0.038, 0.034
     label_w, gap_x, gap_y = 0.062, 0.018, 0.009
-    title_y_off, chip_y_off = 0.064, 0.030
 
-    free_w_in = (aw_ - 2 * pad_x - label_w - 2 * gap_x) * FIG_W / 3.0
+    free_w_in = (aw_ - 2 * pad_x - label_w - 3 * gap_x) * FIG_W / 3.0
     free_h_in = (ah_ - pad_top - pad_bot - 3 * gap_y) * FIG_H / 4.0
     cell_in = min(free_w_in, free_h_in)
     cell_w, cell_h = cell_in / FIG_W, cell_in / FIG_H
@@ -1390,31 +1456,38 @@ def build_panel_a(fig, card, rep_data, png_paths):
     for r, name in enumerate(ROW_NAMES):
         a = fig.add_axes([gx0, row_y(r), label_w, cell_h])
         a.axis("off")
-        a.text(0.98, 0.5, name, ha="right", va="center", fontsize=9.0, fontweight="bold", color=TEXT)
+        if r == 0:
+            # Row 0's label cell has ample unused space, so the meaning of
+            # the in-tile chip (a bare slash-separated triplet, matching
+            # the 4.2/4.5 ratio-chip convention) is spelled out here rather
+            # than competing for room in the legend strip below the grid.
+            a.text(0.98, 0.62, name, ha="right", va="center", fontsize=8.8,
+                   fontweight="bold", color=TEXT)
+            a.text(0.98, 0.34, "(φ / LCF / disc)", ha="right", va="center",
+                   fontsize=6.4, style="italic", color=SUBTEXT)
+        else:
+            a.text(0.98, 0.5, name, ha="right", va="center", fontsize=8.8,
+                   fontweight="bold", color=TEXT)
 
     for c, g in enumerate(GROUPS):
         x = gx0 + label_w + gap_x + c * (cell_w + gap_x)
-        fig.text(x + cell_w / 2.0, gy_top + title_y_off, LABELS[g], ha="center", va="bottom",
-                 fontsize=9.8, fontweight="bold", color=TITLE_COLOR[g])
+        fig.text(x + cell_w / 2.0, gy_top + 0.010, LABELS[g], ha="center", va="bottom",
+                 fontsize=9.6, fontweight="bold", color=TITLE_COLOR[g])
 
         rd = rep_data[g]
-
-        # Compact two-line metric chip placed in the strip between the
-        # column title and the 3D-volume cell -- never overlaid on the
-        # render/slice imagery itself. A single-line "phi | LCF | disc"
-        # string is wider than the column pitch at a readable font size and
-        # bleeds into the neighboring column's chip; splitting phi onto its
-        # own short first line keeps every line comfortably inside the
-        # column width with no overlap and no clipping.
-        chip = (f"φ={rd['pore_fraction']:.2f}\n"
-                f"LCF={rd['largest_component_fraction']:.2f}  |  "
-                f"disc={rd['disconnected_fraction']:.2f}")
-        fig.text(x + cell_w / 2.0, gy_top + chip_y_off, chip, ha="center", va="top",
-                 fontsize=6.4, color=SUBTEXT, linespacing=1.5)
 
         a = fig.add_axes([x, row_y(0), cell_w, cell_h])
         a.imshow(Image.open(png_paths[g]), interpolation="bilinear")
         image_cell(a, COLORS[g])
+        # Value chip written INSIDE the 3D-render tile, bottom-left, same
+        # placement/typography/box style as the porosity chip in Figures
+        # 4.1/4.4 and the phase-ratio chip in Figures 4.2/4.5.
+        a.text(0.035, 0.035,
+               f"{rd['pore_fraction']:.2f}/{rd['largest_component_fraction']:.2f}/"
+               f"{rd['disconnected_fraction']:.2f}",
+               transform=a.transAxes, fontsize=6.6, color=SUBTEXT,
+               ha="left", va="bottom",
+               bbox=dict(facecolor="white", edgecolor="none", alpha=0.82, pad=1.5))
 
         for ri, plane in enumerate(PLANES):
             a = fig.add_axes([x, row_y(ri + 1), cell_w, cell_h])
@@ -1429,7 +1502,8 @@ def build_panel_a(fig, card, rep_data, png_paths):
                            color="white", ha=ha, va=va,
                            bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.2))
 
-    # compact topology-class legend, centered under the grid
+    # compact topology-class legend, centered under the grid (same
+    # Rectangle+text pattern as Figures 4.2/4.4/4.5).
     legend_y = ay_ + 0.015
     swatch_colors = [SOLID_COLOR, LARGEST_COMPONENT_COLOR, DISCONNECTED_FRAGMENT_COLOR]
     item_widths = [0.052, 0.150, 0.145]
@@ -1445,18 +1519,28 @@ def build_panel_a(fig, card, rep_data, png_paths):
 
 
 # ============================================================================
-# 11. PANEL B -- connected-backbone and percolation dashboard
+# 11. PANEL B -- connected-backbone and directional-percolation dashboard
+#
+# Both sub-plots are grouped bar charts with genuine mean +/- std error bars
+# (std read straight from group_scalar_summary.csv's own 'std' column, same
+# long-format resolver as the mean) -- the same bar-plus-error-bar language
+# Figure 4.4 uses for its directional-transitions panel, rather than a
+# heatmap-with-colorbar, whose in-cell numeric labels and colorbar are what
+# previously ran past the panel bounds. A single shared legend (on the top
+# sub-plot only) covers both, exactly as Figure 4.4's panel b does.
 # ============================================================================
 
 B1_METRICS = ["largest_pore_component_fraction", "disconnected_pore_fraction", "mean_percolating_axes"]
 B1_LABELS = ["Largest pore\ncomponent fraction", "Disconnected\npore fraction",
              "Mean percolating\naxes / 3"]
 
+PERC_AXES_ORDER = ["x", "y", "z"]
+
 
 def plot_backbone_bars(ax, panel_b_metrics):
     style_axis(ax, grid=True)
     ax.set_title("Connected pore backbone", pad=5.0, color=TEXT, fontweight="bold")
-    ax.set_xlim(0, 1)
+    ax.set_xlim(0, 1.12)
     ax.set_xlabel("Fraction (mean percolating axes shown as value / 3)", color=SUBTEXT)
 
     ys = np.arange(len(B1_METRICS))
@@ -1464,25 +1548,27 @@ def plot_backbone_bars(ax, panel_b_metrics):
     bar_h = 0.20
     for mi, key in enumerate(B1_METRICS):
         r = panel_b_metrics[key]
+        scale = 3.0 if key == "mean_percolating_axes" else 1.0
         for g in GROUPS:
             raw = r[g]
-            plotted = raw / 3.0 if key == "mean_percolating_axes" else raw
+            raw_std = r.get(f"{g}_std", 0.0)
+            plotted, plotted_std = raw / scale, raw_std / scale
             y = ys[mi] + offset[g]
-            ax.barh(y, plotted, height=bar_h, color=COLORS[g], edgecolor="black",
-                    linewidth=0.5, zorder=3)
-            label_val = f"{raw:.2f}" if key != "mean_percolating_axes" else f"{raw:.2f}"
-            ax.text(min(plotted + 0.02, 0.97), y, label_val, va="center", ha="left",
+            ax.barh(y, plotted, height=bar_h, xerr=plotted_std if plotted_std > 0 else None,
+                    color=COLORS[g], edgecolor="black", linewidth=0.5, zorder=3,
+                    error_kw=dict(ecolor=TEXT, elinewidth=0.9, capsize=1.8))
+            ax.text(min(plotted + plotted_std + 0.025, 1.09), y, f"{raw:.2f}", va="center", ha="left",
                     fontsize=6.2, color=TEXT, zorder=4)
 
     ax.set_yticks(ys)
     ax.set_yticklabels(B1_LABELS, fontsize=6.8)
     ax.set_ylim(-0.5, len(B1_METRICS) - 0.5)
-    ax.margins(x=0.02)
 
-    # Placed just outside the right axes edge (bbox_to_anchor x>1) rather
-    # than inside any corner: every corner of this chart can carry a bar
-    # label near the x=1 edge (real/diffusion routinely reach ~0.9+), so an
-    # inside legend risks covering data in some row.
+    # Single model legend for all of panel b (the bottom sub-plot carries
+    # none), placed just outside the right axes edge rather than in any
+    # inside corner: every row's bar (mean +/- std) can reach close to the
+    # x=1 edge, so an inside "upper right" legend would risk sitting on top
+    # of the topmost row's bar/error-bar/value label.
     handles = [Line2D([0], [0], marker="s", linestyle="None", markersize=7,
                        markerfacecolor=COLORS[g], markeredgecolor="black")
                for g in GROUPS]
@@ -1493,40 +1579,40 @@ def plot_backbone_bars(ax, panel_b_metrics):
     leg.get_frame().set_linewidth(0.6)
 
 
-def plot_percolation_heatmap(fig, ax, panel_b_metrics):
+def plot_directional_percolation_bars(ax, panel_b_metrics):
     style_axis(ax, grid=False)
+    ax.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
+    ax.set_axisbelow(True)
     ax.set_title("Directional percolating pore fraction", pad=5.0, color=TEXT, fontweight="bold")
+    ax.set_ylabel("Percolating pore fraction", color=SUBTEXT)
 
-    axes_order = ["x", "y", "z"]
-    mat = np.array([[panel_b_metrics[f"percolating_pore_fraction_{ax_letter}"][g]
-                     for ax_letter in axes_order] for g in GROUPS])
+    n_groups = len(GROUPS)
+    group_w = 0.72
+    bar_w = group_w / n_groups
+    xs = np.arange(len(PERC_AXES_ORDER))
 
-    im = ax.imshow(mat, cmap="magma", vmin=0, vmax=1, aspect="auto", interpolation="nearest")
-    ax.set_xticks(range(3))
-    ax.set_xticklabels([s.upper() for s in axes_order])
-    ax.set_yticks(range(3))
-    ax.set_yticklabels([LABELS[g] for g in GROUPS], fontsize=7.0)
-    for sp in ax.spines.values():
-        sp.set_visible(False)
+    max_top = 0.0
+    for gi, g in enumerate(GROUPS):
+        means = [panel_b_metrics[f"percolating_pore_fraction_{a}"][g] for a in PERC_AXES_ORDER]
+        stds = [panel_b_metrics[f"percolating_pore_fraction_{a}"].get(f"{g}_std", 0.0)
+                for a in PERC_AXES_ORDER]
+        offset = (gi - (n_groups - 1) / 2.0) * bar_w
+        ax.bar(xs + offset, means, yerr=stds, width=bar_w * 0.88, color=COLORS[g],
+               edgecolor="black", linewidth=0.7, label=LABELS[g],
+               error_kw=dict(ecolor=TEXT, elinewidth=1.0, capsize=2.2))
+        max_top = max(max_top, max(m + s for m, s in zip(means, stds)))
 
-    for i in range(3):
-        for j in range(3):
-            v = mat[i, j]
-            txt_color = "white" if v < 0.55 else "#1A0F2B"
-            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=7.4,
-                    color=txt_color, fontweight="bold")
-
-    pos = ax.get_position()
-    cax = fig.add_axes([pos.x1 + 0.006, pos.y0, 0.008, pos.height])
-    cb = fig.colorbar(im, cax=cax)
-    cb.ax.tick_params(labelsize=6.0, colors=SUBTEXT)
-    cb.outline.set_edgecolor(SPINE)
-    cb.outline.set_linewidth(0.6)
+    ax.set_xticks(xs)
+    ax.set_xticklabels([s.upper() for s in PERC_AXES_ORDER], fontsize=7.6)
+    ax.set_ylim(0.0, min(1.0, max_top * 1.18) if max_top * 1.18 <= 1.0 else max_top * 1.10)
 
 
 def build_panel_b(fig, card, panel_b_metrics):
     bx_, by_, bw_, bh_ = card
-    pad_l, pad_r, pad_t, pad_b, gap_y = 0.048, 0.098, 0.026, 0.058, 0.075
+    # pad_r leaves room for the outside-right legend in plot_backbone_bars;
+    # "PoreGen/DiffSci" is the longest label, so this is sized for that
+    # string rather than the shorter "PoreGen" used previously.
+    pad_l, pad_r, pad_t, pad_b, gap_y = 0.048, 0.078, 0.026, 0.058, 0.075
 
     plot_w = bw_ - pad_l - pad_r
     plot_h = (bh_ - pad_t - pad_b - gap_y) / 2.0
@@ -1535,14 +1621,35 @@ def build_panel_b(fig, card, panel_b_metrics):
     ax_bot = fig.add_axes([bx_ + pad_l, by_ + pad_b, plot_w, plot_h])
 
     plot_backbone_bars(ax_top, panel_b_metrics)
-    plot_percolation_heatmap(fig, ax_bot, panel_b_metrics)
+    plot_directional_percolation_bars(ax_bot, panel_b_metrics)
 
 
 # ============================================================================
-# 12. PANEL C -- pair-connectedness mechanism + network-integrity inset
+# 12. PANEL C -- pair-connectedness mechanism + network-integrity summaries
 # ============================================================================
 
 AXIS_TITLES = {"x": "Pair-connectedness, x", "y": "Pair-connectedness, y", "z": "Pair-connectedness, z"}
+
+
+def _pchip_display_curve(x: np.ndarray, y: np.ndarray, n: int = 200):
+    """Monotone cubic (PCHIP) interpolation through the true group-mean
+    curve points, evaluated on a dense grid, for DISPLAY smoothness only --
+    it passes exactly through every real data point (no data is invented or
+    altered) and never overshoots between them, unlike a plain spline. This
+    replaces the raw point-to-point polyline, whose lag-to-lag sampling
+    noise otherwise reads as an ugly sawtooth. RMSE values in the subplot
+    title are computed upstream from the original, unsmoothed curve
+    values -- this function is never used for anything but the plotted
+    line."""
+    order = np.argsort(x)
+    xs, ys = np.asarray(x, float)[order], np.asarray(y, float)[order]
+    xs_u, idx = np.unique(xs, return_index=True)
+    if xs_u.size < 3:
+        return xs, ys
+    ys_u = ys[idx]
+    dense_x = np.linspace(xs_u.min(), xs_u.max(), n)
+    dense_y = PchipInterpolator(xs_u, ys_u)(dense_x)
+    return dense_x, dense_y
 
 
 def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, rmse_row, show_legend=False):
@@ -1551,16 +1658,22 @@ def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, rmse_row, sh
     # separate text box, so the panel communicates through the plotted
     # curves rather than a block of standalone commentary.
     title = (f"{AXIS_TITLES[axis_letter]}\n"
-             f"RMSE  PoreGen {rmse_row['diffusion']:.4f}  |  IPWGAN {rmse_row['gan']:.4f}")
-    ax.set_title(title, pad=4.0, color=TEXT, fontweight="bold", fontsize=7.2, linespacing=1.6)
+             f"RMSE  {LABELS['diffusion']} {rmse_row['diffusion']:.4f}  |  "
+             f"{LABELS['gan']} {rmse_row['gan']:.4f}")
+    ax.set_title(title, pad=4.0, color=TEXT, fontweight="bold", fontsize=7.0, linespacing=1.6)
     ax.set_xlabel("Lag (vox)", color=SUBTEXT)
     ax.set_ylabel("Pair-connectedness", color=SUBTEXT)
     ax.set_ylim(0, ymax * 1.08)
 
     for g in GROUPS:
         d = curve_data[g]
-        ax.plot(d["x"], d["y"], color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
+        xs, ys = _pchip_display_curve(d["x"], d["y"])
+        ax.plot(xs, ys, color=COLORS[g], linestyle=LINESTYLES[g], linewidth=LINEWIDTHS[g],
                 solid_capstyle="round", label=LABELS[g], zorder=3 if g == "real" else 4)
+        # Small markers at the true measured lag points -- keeps the curve
+        # legible as real discrete data rather than a purely synthetic line.
+        ax.scatter(d["x"], d["y"], s=8.0, color=COLORS[g], edgecolors="none",
+                   alpha=0.85, zorder=5)
     ax.margins(x=0.02)
 
     if show_legend:
@@ -1573,31 +1686,63 @@ def plot_pair_connectedness_axis(ax, curve_data, axis_letter, ymax, rmse_row, sh
         _emphasize_dashed_legend_handle(leg.legend_handles[GROUPS.index("gan")])
 
 
-def plot_network_inset(ax, advanced_metrics):
+def plot_network_summary(ax, advanced_metrics):
+    """Clean point + range (mean +/- std) summary of all three supplementary
+    network descriptors in ONE compact panel -- an errorbar/marker plot
+    rather than a scatter with floating per-point value text (matching the
+    Figure 4.5 panel-c 'fragmentation' marker-summary convention), with a
+    twin y-axis for SNOW coordination number so that a descriptor living on
+    a different scale (~1-3) than a largest-component fraction (0-1) can
+    still share one categorical x-axis and one title/legend instead of a
+    second full sub-plot competing for panel c's limited height budget."""
     style_axis(ax, grid=True)
     ax.set_title("Extracted-network connectivity", pad=4.0, color=TEXT, fontweight="bold")
     ax.set_ylabel("Largest-component fraction", color=SUBTEXT)
-    ax.set_ylim(0, 1.15)
+    ax.set_ylim(0, 1.12)
 
-    keys = ["skeleton_graph_largest_component_fraction", "snow_graph_largest_component_fraction"]
-    xlabels = ["Skeleton\ngraph LCF", "SNOW\ngraph LCF"]
-    xs = np.arange(len(keys))
-    offset = {"real": -0.22, "diffusion": 0.0, "gan": 0.22}
+    lcf_keys = ["skeleton_graph_largest_component_fraction", "snow_graph_largest_component_fraction"]
+    xlabels = ["Skeleton\ngraph LCF", "SNOW\ngraph LCF", "SNOW mean\ncoordination"]
+    xs = np.arange(len(xlabels))
+    offset = {"real": -0.20, "diffusion": 0.0, "gan": 0.20}
+
+    ax2 = ax.twinx()
+    ax2.set_ylabel("Coordination number", color=SUBTEXT)
+    for sp in ax2.spines.values():
+        sp.set_visible(False)
+    ax2.tick_params(colors=SUBTEXT, labelcolor=SUBTEXT)
+
+    coord = advanced_metrics["snow_coordination_number"]
+    coord_vals = np.array([coord[g] for g in GROUPS])
+    coord_stds = np.array([coord.get(f"{g}_std", 0.0) for g in GROUPS])
+    ax2.set_ylim(max(0.0, float(np.min(coord_vals - coord_stds)) * 0.85),
+                 float(np.max(coord_vals + coord_stds)) * 1.18)
+
     for g in GROUPS:
-        vals = [advanced_metrics[k][g] for k in keys]
-        ax.scatter(xs + offset[g], vals, s=52, marker=MARKERS[g], color=COLORS[g],
-                   edgecolors="black", linewidths=0.8, zorder=5, label=LABELS[g])
-        for xi, v in zip(xs + offset[g], vals):
-            ax.text(xi, v + 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=5.6, color=SUBTEXT)
+        vals = np.array([advanced_metrics[k][g] for k in lcf_keys])
+        stds = np.array([advanced_metrics[k].get(f"{g}_std", 0.0) for k in lcf_keys])
+        ax.errorbar(xs[:2] + offset[g], vals, yerr=stds, fmt=MARKERS[g], color=COLORS[g],
+                    markerfacecolor=COLORS[g], markeredgecolor="black", markeredgewidth=0.8,
+                    markersize=6.5, ecolor=COLORS[g], elinewidth=1.1, capsize=2.4,
+                    linestyle="None", zorder=5, label=LABELS[g])
+        ax2.errorbar([xs[2] + offset[g]], [coord[g]], yerr=[coord.get(f"{g}_std", 0.0)],
+                     fmt=MARKERS[g], color=COLORS[g], markerfacecolor=COLORS[g],
+                     markeredgecolor="black", markeredgewidth=0.8, markersize=6.5,
+                     ecolor=COLORS[g], elinewidth=1.1, capsize=2.4, linestyle="None", zorder=5)
+
+    # A faint separator between the LCF pair and the coordination-number
+    # category makes the axis switch (left scale -> right scale) legible
+    # at a glance rather than only inferable from the legend/axis labels.
+    ax.axvline(1.62, color=SPINE, linewidth=0.8, linestyle=(0, (2.0, 1.6)), zorder=1)
 
     ax.set_xticks(xs)
     ax.set_xticklabels(xlabels, fontsize=6.4)
-    ax.set_xlim(-0.55, len(keys) - 0.45)
+    ax.set_xlim(-0.55, len(xlabels) - 0.45)
 
-    coord = advanced_metrics["snow_coordination_number"]
-    coord_txt = "SNOW coordination:  " + "   ".join(f"{LABELS[g]} {coord[g]:.2f}" for g in GROUPS)
-    ax.text(0.5, -0.30, coord_txt, transform=ax.transAxes, ha="center", va="top",
-            fontsize=5.8, color=SUBTEXT)
+    leg = ax.legend(loc="lower left", frameon=True, facecolor="white", edgecolor=SPINE,
+                    framealpha=0.94, handlelength=1.3, borderpad=0.4, labelspacing=0.35,
+                    fontsize=6.2, ncol=1, handletextpad=0.4)
+    leg.get_frame().set_linewidth(0.6)
+    leg.set_zorder(8)
 
 
 def build_panel_c(fig, card, curve_data, rmse_data, advanced_metrics):
@@ -1627,13 +1772,16 @@ def build_panel_c(fig, card, curve_data, rmse_data, advanced_metrics):
         plot_pair_connectedness_axis(ax, curve_data[axis_letter], axis_letter, ymax,
                                       rmse_data[axis_letter], show_legend=(i == 2))
 
-    # Right column: a single compact extracted-network connectivity plot,
-    # now given the full column height since RMSE moved into the curve
-    # subplot titles above -- no separate text box competing for space.
+    # Right column: one combined point/range summary of all three
+    # supplementary skeleton/SNOW descriptors (twin y-axis for the
+    # differently-scaled coordination number), given the panel's full
+    # height budget -- two separately-titled stacked sub-plots were tried
+    # first but panel c's height is too tight for two full title+axis
+    # blocks without their text colliding.
     right_x = cx_ + pad_l + curves_w + 0.028
     right_w = cx_ + cw_ - pad_r - right_x
-    ax_inset = fig.add_axes([right_x, plot_bottom, right_w, plot_h])
-    plot_network_inset(ax_inset, advanced_metrics)
+    ax_net = fig.add_axes([right_x, plot_bottom, right_w, plot_h])
+    plot_network_summary(ax_net, advanced_metrics)
 
 
 # ============================================================================
@@ -1724,7 +1872,8 @@ def main():
             f"parallel_scale={render_audit[g]['parallel_scale']:.4f}  "
             f"connectivity='{render_audit[g]['connectivity']}'")
     finalize_renders(raw_paths, png_paths)
-    log("Panel a crop/zoom used: none")
+    log("Panel a crop/zoom used: common alpha bounding-box crop across groups "
+        "(pad_frac=0.06), matching Figures 4.1/4.4/4.5")
 
     # ---- panel b: official scalar metrics (group_scalar_summary.csv only,
     # long-format, exact metric-name rows -- see resolve_long_group_metric) --
@@ -1789,8 +1938,11 @@ def main():
             for g in GROUPS
         },
         "panel_b_metrics": {
-            key: {"raw_name": panel_b_metrics[key]["raw_name"], "real": panel_b_metrics[key]["real"],
-                  "diffusion": panel_b_metrics[key]["diffusion"], "gan": panel_b_metrics[key]["gan"],
+            key: {"raw_name": panel_b_metrics[key]["raw_name"],
+                  "real": panel_b_metrics[key]["real"], "real_std": panel_b_metrics[key]["real_std"],
+                  "diffusion": panel_b_metrics[key]["diffusion"],
+                  "diffusion_std": panel_b_metrics[key]["diffusion_std"],
+                  "gan": panel_b_metrics[key]["gan"], "gan_std": panel_b_metrics[key]["gan_std"],
                   "source": panel_b_metrics[key]["source"]}
             for key, *_ in PANEL_B_METRICS
         },
@@ -1798,8 +1950,11 @@ def main():
                                  for axis_letter in ("x", "y", "z")},
         "panel_c_rmse": rmse_data,
         "panel_c_advanced_metrics": {
-            key: {"raw_name": advanced_metrics[key]["raw_name"], "real": advanced_metrics[key]["real"],
-                  "diffusion": advanced_metrics[key]["diffusion"], "gan": advanced_metrics[key]["gan"],
+            key: {"raw_name": advanced_metrics[key]["raw_name"],
+                  "real": advanced_metrics[key]["real"], "real_std": advanced_metrics[key]["real_std"],
+                  "diffusion": advanced_metrics[key]["diffusion"],
+                  "diffusion_std": advanced_metrics[key]["diffusion_std"],
+                  "gan": advanced_metrics[key]["gan"], "gan_std": advanced_metrics[key]["gan_std"],
                   "source": advanced_metrics[key]["source"]}
             for key, *_ in ADVANCED_METRICS
         },
@@ -1832,7 +1987,7 @@ def main():
         log(f"  {axis_letter}: diffusion={r['diffusion']:.4f} gan={r['gan']:.4f}")
 
     log("\nPanel c advanced/network metrics:")
-    for key, label, _aliases, _exp in ADVANCED_METRICS:
+    for key, label, *_ in ADVANCED_METRICS:
         r = advanced_metrics[key]
         log(f"  {label}: real={r['real']:.4f} diffusion={r['diffusion']:.4f} gan={r['gan']:.4f} "
             f"(source={Path(r['source']).name})")
