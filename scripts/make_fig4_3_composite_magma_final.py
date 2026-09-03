@@ -701,7 +701,7 @@ def choose_roi(hr_binary: np.ndarray):
 
 def draw_image_strip(fig, card, cols, images_full, titles_on_top, roi=None,
                       pad_x=0.014, pad_top=None, pad_bot=0.014, gap_x=0.014,
-                      roi_linewidth=1.3):
+                      roi_linewidth=1.3, title_offset=0.010):
     x_, y_, w_, h_ = card
     if pad_top is None:
         pad_top = 0.034 if titles_on_top else 0.016
@@ -720,7 +720,7 @@ def draw_image_strip(fig, card, cols, images_full, titles_on_top, roi=None,
     for i, key in enumerate(cols):
         cx = gx0 + i * (cell_w + gap_x)
         if titles_on_top:
-            fig.text(cx + cell_w / 2.0, gy0 + cell_h + 0.010, LABELS[key],
+            fig.text(cx + cell_w / 2.0, gy0 + cell_h + title_offset, LABELS[key],
                      ha="center", va="bottom", fontsize=9.2, fontweight="bold",
                      color=TITLE_COLOR[key])
         a = fig.add_axes([cx, gy0, cell_w, cell_h])
@@ -1071,7 +1071,8 @@ def main():
     # defaults, reclaiming unused space so its cells render ~9% larger;
     # panel b is untouched. The ROI box is also drawn a bit thicker here.
     draw_image_strip(fig, card_a, PANEL_A_COLS, images_full, titles_on_top=True, roi=roi,
-                      pad_top=0.024, pad_bot=0.007, gap_x=0.011, roi_linewidth=1.9)
+                      pad_top=0.024, pad_bot=0.007, gap_x=0.011, roi_linewidth=1.9,
+                      title_offset=0.007)
     draw_image_strip(fig, card_b, PANEL_B_COLS, images_roi, titles_on_top=True, roi=None)
     draw_phase_error_maps(fig, card_c, PANEL_C_COLS, hr_binary_roi, pred_binary_roi)
     plot_metric_bars(fig, card_d, main_df, resolved_cols, method_col)
