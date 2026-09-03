@@ -35,7 +35,7 @@ matplotlib.use("Agg")
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
-from matplotlib.colors import ListedColormap, to_hex
+from matplotlib.colors import ListedColormap, to_rgb
 from PIL import Image
 
 warnings.filterwarnings("ignore")
@@ -182,9 +182,19 @@ CARD_LW = 0.8
 CELL_LW = 1.6
 
 # Official phase convention -- never swapped: 0=pore, 1=active, 2=CBD.
-# Phase -> grayscale value (0=pore near-black, 1=active near-white, 2=CBD mid-gray).
-PHASE_GRAY_VALUES = np.array([0.05, 0.94, 0.55])
+# Phase -> categorical color, matching Figure 4.5's phase-color convention
+# exactly (pore = deep violet, active = orange/copper, CBD = pale yellow).
+PHASE_COLORS = {0: "#3C1A5B", 1: "#E0792A", 2: "#F5E27A"}
+PHASE_CMAP = ListedColormap([PHASE_COLORS[0], PHASE_COLORS[1], PHASE_COLORS[2]])
 PHASE_NAMES = ["Pore", "Active", "CBD"]
+
+# Same X/Y/Z direction-arrow labels as Figure 4.5, applied only to the
+# Reference column's slice panels.
+DIRECTION_LABELS = {
+    "X–Y slice": [("→ X", (0.90, 0.07), "right", "bottom"), ("↑ Y", (0.07, 0.90), "left", "top")],
+    "X–Z slice": [("→ X", (0.90, 0.07), "right", "bottom"), ("↑ Z", (0.07, 0.90), "left", "top")],
+    "Y–Z slice": [("→ Y", (0.90, 0.07), "right", "bottom"), ("↑ Z", (0.07, 0.90), "left", "top")],
+}
 
 # ============================================================================
 # 3. GEOMETRY (figure fractions) -- reused verbatim from Figure 4.1
@@ -457,11 +467,11 @@ def render_cutaway_cube_pyvista(vol: np.ndarray, group: str, out_raw: Path, para
     grid.cell_data["keep"] = _octant_keep_mask(nx, ny, nz).flatten(order="F").astype(np.uint8)
 
     sub = grid.threshold(0.5, scalars="keep")
-    phase_cmap = ListedColormap([to_hex((g, g, g)) for g in PHASE_GRAY_VALUES])
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
-    pl.add_mesh(sub, scalars="phase", cmap=phase_cmap, clim=[0, 2], show_scalar_bar=False)
+    pl.add_mesh(sub, scalars="phase", cmap=PHASE_CMAP, clim=[0, 2], show_scalar_bar=False,
+                ambient=0.42, diffuse=0.75, specular=0.05)
     pl.add_mesh(pv.Box(bounds=(0, nx, 0, ny, 0, nz)), style="wireframe",
                 color=COLORS[group], line_width=2.4, opacity=0.65)
 
@@ -487,11 +497,9 @@ def render_cutaway_cube_matplotlib(vol: np.ndarray, group: str, out_raw: Path):
     nx, ny, nz = lab_xyz.shape
 
     filled = _octant_keep_mask(nx, ny, nz)
-    gray = PHASE_GRAY_VALUES[lab_xyz]
+    phase_rgb = np.array([to_rgb(PHASE_COLORS[k]) for k in (0, 1, 2)])
     colors = np.empty(filled.shape + (4,), dtype=float)
-    colors[..., 0] = gray
-    colors[..., 1] = gray
-    colors[..., 2] = gray
+    colors[..., :3] = phase_rgb[lab_xyz]
     colors[..., 3] = 1.0
 
     fig = plt.figure(figsize=(CANVAS_PX / 200.0, CANVAS_PX / 200.0), dpi=200)
@@ -1059,14 +1067,20 @@ def main():
 
         v = rep[g]["vol"]
         slices = [v[v.shape[0] // 2, :, :], v[:, v.shape[1] // 2, :], v[:, :, v.shape[2] // 2]]
+        slice_row_names = ["X–Y slice", "X–Z slice", "Y–Z slice"]
         for r, sl in enumerate(slices):
             a = fig.add_axes([x, row_y(r + 1), cell_w, cell_h])
-            a.imshow(PHASE_GRAY_VALUES[sl], cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+            a.imshow(sl, cmap=PHASE_CMAP, vmin=0, vmax=2, interpolation="nearest")
             image_cell(a, COLORS[g])
+            if c == 0:
+                for txt, (tx, ty), ha, va in DIRECTION_LABELS[slice_row_names[r]]:
+                    a.text(tx, ty, txt, transform=a.transAxes, fontsize=6.9, fontweight="bold",
+                           color="white", ha=ha, va=va,
+                           bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.2))
 
     # small phase legend (Pore | Active | CBD), centered under the grid
     legend_y = ay_ + 0.015
-    phase_hex = [to_hex((v, v, v)) for v in PHASE_GRAY_VALUES]
+    phase_hex = [PHASE_COLORS[0], PHASE_COLORS[1], PHASE_COLORS[2]]
     item_widths = [0.070, 0.082, 0.062]
     total_w = sum(item_widths)
     lx = gx0 + label_w + gap_x + (grid_w - label_w - gap_x - total_w) / 2.0
