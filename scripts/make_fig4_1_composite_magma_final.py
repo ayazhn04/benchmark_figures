@@ -110,6 +110,7 @@ LABELS = {"real": "Reference", "poregen": "PoreGen/DiffSci", "gan_best": "True2D
 LINESTYLES = {"real": "-", "poregen": "-", "gan_best": (0, (5.5, 2.2))}
 LINEWIDTHS = {"real": 1.85, "poregen": 1.85, "gan_best": 1.95}
 TITLE_COLOR = {"real": TEXT, "poregen": COLORS["poregen"], "gan_best": COLORS["gan_best"]}
+MARKERS = {"real": "o", "poregen": "D", "gan_best": "^"}
 
 CARD_LW = 0.8
 CELL_LW = 1.6
@@ -388,14 +389,13 @@ def render_volume(vol, group, out_raw, parallel_scale):
         faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64),
                               faces.astype(np.int64)])
         mesh = pv.PolyData(verts, faces_pv)
-        mesh["depth"] = verts[:, 0]
 
         nz, ny, nx = vol.shape
         center = np.array([nz / 2.0, ny / 2.0, nx / 2.0])
 
         pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
         pl.set_background("white")
-        pl.add_mesh(mesh, scalars="depth", cmap="magma", opacity=0.85,
+        pl.add_mesh(mesh, color=COLORS[group], opacity=0.85,
                     smooth_shading=True, specular=0.18, specular_power=14,
                     ambient=0.24, diffuse=0.82, show_scalar_bar=False)
         pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
@@ -643,7 +643,7 @@ def plot_connectivity_distribution(ax, stage1, col, xlabel, rng):
         ax.scatter(vals, jitter, s=10.0, color=COLORS[g], alpha=0.60,
                    edgecolors="none", zorder=3)
 
-        ax.scatter([np.mean(vals)], [p], marker="D", s=95, color=COLORS[g],
+        ax.scatter([np.mean(vals)], [p], marker=MARKERS[g], s=95, color=COLORS[g],
                    edgecolors="black", linewidths=1.0, zorder=5)
 
     _finalize_yaxis()
@@ -818,12 +818,7 @@ def main():
 
     fig.text(header_x, title_y, "Connectivity-sensitive distributions",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
-    fig.text(header_x, subtitle_y,
-             "Per-sample distributions across the real validation set and generated ensembles. "
-             "The dotted gray line marks the reference mean.",
-             ha="left", va="top", fontsize=7.2, color=SUBTEXT, wrap=True)
-
-    legend_handles = [Patch(facecolor=COLORS[g], edgecolor=COLORS[g], alpha=0.55, label=LABELS[g])
+    legend_handles = [Patch(facecolor=COLORS[g], edgecolor=COLORS[g], alpha=0.85, label=LABELS[g])
                       for g in CONNECTIVITY_ORDER]
     fig.legend(handles=legend_handles, loc="upper right",
               bbox_to_anchor=(cx_ + cw_ - 0.010, title_y + 0.006),
