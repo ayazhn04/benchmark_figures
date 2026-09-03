@@ -429,14 +429,13 @@ def render_isosurface(vol: np.ndarray, group: str, out_raw: Path, parallel_scale
     verts, faces, _, _ = measure.marching_cubes(v, level=0.5)
     faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
     mesh = pv.PolyData(verts, faces_pv)
-    mesh["depth"] = verts[:, 0]
 
     nz, ny, nx = vol.shape
     center = np.array([nz / 2.0, ny / 2.0, nx / 2.0])
 
     pl = pv.Plotter(off_screen=True, window_size=(RENDER_PX, RENDER_PX))
     pl.set_background("white")
-    pl.add_mesh(mesh, scalars="depth", cmap="magma", opacity=0.90,
+    pl.add_mesh(mesh, color=COLORS[group], opacity=0.90,
                 smooth_shading=True, specular=0.18, specular_power=14,
                 ambient=0.24, diffuse=0.82, show_scalar_bar=False)
     pl.add_mesh(pv.Box(bounds=(0, nz, 0, ny, 0, nx)), style="wireframe",
