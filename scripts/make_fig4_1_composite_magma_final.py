@@ -115,6 +115,15 @@ MARKERS = {"real": "o", "poregen": "D", "gan_best": "^"}
 CARD_LW = 0.8
 CELL_LW = 1.6
 
+# Small, quiet direction cues -- shown only in the leftmost (Reference)
+# column so the convention reads once instead of being repeated for every
+# group. Same style as Figure 4.4.
+DIRECTION_LABELS = {
+    "X–Y slice": [("→ X", (0.90, 0.07), "right", "bottom"), ("↑ Y", (0.07, 0.90), "left", "top")],
+    "X–Z slice": [("→ X", (0.90, 0.07), "right", "bottom"), ("↑ Z", (0.07, 0.90), "left", "top")],
+    "Y–Z slice": [("→ Y", (0.90, 0.07), "right", "bottom"), ("↑ Z", (0.07, 0.90), "left", "top")],
+}
+
 # ============================================================================
 # 3. GEOMETRY (figure fractions) — the alignment contract
 # ============================================================================
@@ -751,10 +760,16 @@ def main():
 
         v = rep[g]["vol"]
         slices = [v[v.shape[0] // 2, :, :], v[:, v.shape[1] // 2, :], v[:, :, v.shape[2] // 2]]
+        slice_row_names = ["X–Y slice", "X–Z slice", "Y–Z slice"]
         for r, sl in enumerate(slices):
             a = fig.add_axes([x, row_y(r + 1), cell_w, cell_h])
             a.imshow(sl, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
             image_cell(a, COLORS[g])
+            if c == 0:
+                for txt, (tx, ty), ha, va in DIRECTION_LABELS[slice_row_names[r]]:
+                    a.text(tx, ty, txt, transform=a.transAxes, fontsize=6.9, fontweight="bold",
+                           color="white", ha=ha, va=va,
+                           bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.2))
 
     # =========================== PANEL B ====================================
     bx_, by_, bw_, bh_ = card_b
