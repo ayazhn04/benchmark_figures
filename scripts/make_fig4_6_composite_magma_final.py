@@ -1880,7 +1880,7 @@ def plot_network_summary(ax, advanced_metrics):
     offset = {"real": -0.20, "diffusion": 0.0, "gan": 0.20}
 
     ax2 = ax.twinx()
-    ax2.set_ylabel("Coordination number", color=SUBTEXT, fontsize=7.2)
+    ax2.set_ylabel("Coordination number", color=SUBTEXT, fontsize=7.2, labelpad=2.0)
     for sp in ax2.spines.values():
         sp.set_visible(False)
     ax2.tick_params(colors=SUBTEXT, labelcolor=SUBTEXT, labelsize=6.2)
@@ -1919,10 +1919,14 @@ def build_panel_c(fig, card, panel_b_metrics, advanced_metrics, per_sample_df):
     plot_top = header_title_y - 0.058
     # pad_l is sized for the longest y-category label ("PoreGen/DiffSci")
     # plus real breathing room to the card's left border -- the previous
-    # smaller margin left that label crowding the edge. gap_x is likewise
-    # widened between C1 and C2 specifically (C2 no longer draws its own
-    # copy of the labels, which was the other half of that crowding).
-    pad_l, pad_r, pad_b, gap_x = 0.088, 0.020, 0.052, 0.036
+    # smaller margin left that label crowding the edge. pad_r is widened
+    # (and the whole C1-C4 group nudged left via a smaller pad_l) to give
+    # C4's secondary "Coordination number" axis label enough room to stay
+    # inside the card. gap_x_12 is narrower than the other two inter-plot
+    # gaps (C1-C2 needs less separation than C2-C3/C3-C4, which stay equal
+    # to each other for a visually even rhythm across the remaining blocks).
+    pad_l, pad_r, pad_b = 0.082, 0.034, 0.052
+    gap_x_12, gap_x_rest = 0.022, 0.036
 
     fig.text(cx_ + 0.014, header_title_y, "Topology-preservation descriptors",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
@@ -1941,7 +1945,7 @@ def build_panel_c(fig, card, panel_b_metrics, advanced_metrics, per_sample_df):
 
     plot_bottom = cy_ + pad_b
     plot_h = plot_top - plot_bottom
-    plot_w = (cw_ - pad_l - pad_r - 3 * gap_x) / 4.0
+    plot_w = (cw_ - pad_l - pad_r - gap_x_12 - 2 * gap_x_rest) / 4.0
 
     rng = np.random.default_rng(11)
 
@@ -1951,18 +1955,18 @@ def build_panel_c(fig, card, panel_b_metrics, advanced_metrics, per_sample_df):
                                   "Largest connected\npore-component fraction",
                                   "largest_pore_component_fraction", panel_b_metrics, rng)
 
-    x1 = x0 + plot_w + gap_x
+    x1 = x0 + plot_w + gap_x_12
     ax_c2 = fig.add_axes([x1, plot_bottom, plot_w, plot_h])
     plot_descriptor_distribution(ax_c2, per_sample_df, "disconnected_fraction_pore",
                                   "Disconnected\npore fraction",
                                   "disconnected_pore_fraction", panel_b_metrics, rng,
                                   show_ylabels=False)
 
-    x2 = x1 + plot_w + gap_x
+    x2 = x1 + plot_w + gap_x_rest
     ax_c3 = fig.add_axes([x2, plot_bottom, plot_w, plot_h])
     plot_directional_percolation_bars(ax_c3, panel_b_metrics)
 
-    x3 = x2 + plot_w + gap_x
+    x3 = x2 + plot_w + gap_x_rest
     ax_c4 = fig.add_axes([x3, plot_bottom, plot_w, plot_h])
     plot_network_summary(ax_c4, advanced_metrics)
 
