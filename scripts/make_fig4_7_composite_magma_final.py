@@ -591,17 +591,19 @@ def build_panel_a(fig, card, rep, png_paths):
                            color="white", ha=ha, va=va,
                            bbox=dict(facecolor=TEXT, edgecolor="none", alpha=0.55, pad=1.2))
 
-    # small neutral pore/solid legend, centered under the grid
+    # small neutral pore/solid legend, centered under the grid -- swatch,
+    # text size, and inter-item spacing bumped up slightly from the previous
+    # revision for readability at manuscript viewing scale.
     legend_y = ay_ + 0.015
-    item_widths = [0.072, 0.078]
+    item_widths = [0.084, 0.090]
     total_w = sum(item_widths)
     lx = gx0 + label_w + gap_x + (grid_w - label_w - gap_x - total_w) / 2.0
     for name, color, w in zip(["Pore", "Solid"], ["#FFFFFF", "#000000"], item_widths):
-        fig.add_artist(Rectangle((lx, legend_y - 0.006), 0.013, 0.011,
+        fig.add_artist(Rectangle((lx, legend_y - 0.0065), 0.016, 0.013,
                                   transform=fig.transFigure, facecolor=color,
                                   edgecolor=SPINE, linewidth=0.6, zorder=101))
-        fig.text(lx + 0.019, legend_y, name, ha="left", va="center",
-                 fontsize=7.4, color=SUBTEXT, zorder=101)
+        fig.text(lx + 0.022, legend_y, name, ha="left", va="center",
+                 fontsize=7.8, color=SUBTEXT, zorder=101)
         lx += w
 
 
@@ -682,8 +684,11 @@ def plot_curve_pair(ax, curves, title, xlabel, ylabel, show_legend=False):
     ax.margins(x=0.02, y=0.06)
 
     if show_legend:
+        # Slightly larger font and a longer handle than the rcParams default
+        # so SurVol's dashed line reads clearly at manuscript viewing scale.
         leg = ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor=SPINE,
-                        framealpha=0.94, handlelength=2.3, borderpad=0.45, labelspacing=0.34)
+                        framealpha=0.94, handlelength=2.6, borderpad=0.45, labelspacing=0.32,
+                        fontsize=7.2)
         leg.get_frame().set_linewidth(0.6)
         leg.set_zorder(8)
 
@@ -762,8 +767,8 @@ def build_panel_c(fig, card, rev_data):
               bbox_to_anchor=(cx_ + cw_ - 0.010, header_y + 0.006),
               bbox_transform=fig.transFigure, ncol=3, frameon=True,
               facecolor="white", edgecolor=SPINE, framealpha=0.94,
-              borderpad=0.45, labelspacing=0.3, columnspacing=1.1,
-              handlelength=1.4, handletextpad=0.5, fontsize=7.4).get_frame().set_linewidth(0.6)
+              borderpad=0.45, labelspacing=0.3, columnspacing=1.2,
+              handlelength=1.6, handletextpad=0.5, fontsize=7.4).get_frame().set_linewidth(0.6)
 
     pad_l, pad_r, pad_t, pad_b = 0.058, 0.025, 0.078, 0.085
     ax = fig.add_axes([cx_ + pad_l, cy_ + pad_b, cw_ - pad_l - pad_r, ch_ - pad_t - pad_b])
@@ -901,9 +906,10 @@ def build_panel_d(fig, card, rows):
             any_plotted = True
             all_ratios.append(r)
 
-    # The x=1 line is now the sole reference cue (no separate marker glyph),
-    # so it is drawn a bit bolder/more visible than the earlier faint version.
-    ax.axvline(1.0, color=SUBTEXT, linewidth=1.3, linestyle=(0, (3, 2)), alpha=0.8, zorder=2)
+    # The x=1 line is the sole reference cue (no separate marker glyph): a
+    # modestly darker neutral gray, slightly bolder than the earlier faint
+    # version, but still visually secondary to the orange/purple markers.
+    ax.axvline(1.0, color="#6E6E6E", linewidth=1.35, linestyle=(0, (3, 2)), alpha=0.85, zorder=2)
     ax.set_yticks(ys)
     ax.set_yticklabels([r["label"] for r in rows], fontsize=8.0)
     ax.set_ylim(-0.6, n - 0.4)
@@ -995,7 +1001,7 @@ def build_panel_e(fig, card, diversity, correlation):
     ax_left.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
     ax_left.set_axisbelow(True)
     ax_left.set_title("Descriptor spread", pad=4.5, color=TEXT, fontweight="bold", fontsize=8.6)
-    ax_left.set_ylabel("Generated / real descriptor SD", color=SUBTEXT, fontsize=7.2)
+    ax_left.set_ylabel("Generated / real descriptor SD", color=SUBTEXT, fontsize=7.6)
 
     if diversity is None:
         draw_unavailable(ax_left)
@@ -1026,7 +1032,7 @@ def build_panel_e(fig, card, diversity, correlation):
     ax_right.set_axisbelow(True)
     ax_right.set_title("Cross-property correlation error", pad=4.5, color=TEXT, fontweight="bold",
                        fontsize=8.6)
-    ax_right.set_ylabel("Mean |Δ correlation| ↓", color=SUBTEXT, fontsize=7.2)
+    ax_right.set_ylabel("Mean |Δ correlation| ↓", color=SUBTEXT, fontsize=7.6)
 
     if correlation is None:
         draw_unavailable(ax_right)
