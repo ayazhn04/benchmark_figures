@@ -117,12 +117,14 @@ CAPILLARY_CSV = PACKAGE_ROOT / "metrics/10_large_volume_integrity/capillary_acce
 BETTI_CSV = PACKAGE_ROOT / "metrics/07_topology/stage10_betti_persistent_homology/stage10_group_summary.csv"
 
 # (metric_key, row label, source CSV, log label) -- exact order required.
+# Row labels are display text only -- the metric_key (first element) used
+# for CSV lookup is unchanged.
 PANEL_D_ROWS = [
-    ("mean_coordination", "Mean coordination", COORD_CSV, "stage07-coordination"),
+    ("mean_coordination", "Coordination", COORD_CSV, "stage07-coordination"),
     ("mean_permeability_vox2", "PNM permeability", TRANSPORT_CSV, "stage08-permeability"),
     ("mean_tortuosity_factor", "PNM tortuosity", TRANSPORT_CSV, "stage08-tortuosity"),
-    ("critical_radius_weighted_p50_vox", "Critical radius r50", CAPILLARY_CSV, "stage09-r50"),
-    ("betti1_fullres", "Betti-1", BETTI_CSV, "stage10-betti1"),
+    ("critical_radius_weighted_p50_vox", "Critical radius $r_{50}$", CAPILLARY_CSV, "stage09-r50"),
+    ("betti1_fullres", "$\\beta_1$", BETTI_CSV, "stage10-betti1"),
 ]
 
 # ---- panel e: ensemble representativeness ---------------------------------
@@ -421,17 +423,17 @@ def validate_qc_manifest(rep_files: dict):
 # 6. PANEL A -- 3D pore-phase isosurface + XY/XZ/YZ slices (512^3)
 #
 # True marching-cubes isosurface of the PORE phase (pore_mask = volume==0)
-# from the representative volume, downsampled by a single fixed factor
-# (DOWNSAMPLE) identical across all three groups purely for render
-# tractability -- no content-dependent cropping, no MIP fallback. If
-# PyVista/scikit-image cannot run, this raises loudly.
+# from the representative volume, downsampled by a single fixed, deterministic
+# block-occupancy-averaging factor (DOWNSAMPLE) identical across all three
+# groups purely for render tractability -- no cosmetic smoothing, no
+# content-dependent cropping, no MIP fallback. If PyVista/scikit-image cannot
+# run, this raises loudly.
 # ============================================================================
 
 
 def render_isosurface_pore(vol: np.ndarray, group: str, out_raw: Path, parallel_scale: float):
     import pyvista as pv
     from skimage import measure
-    from scipy.ndimage import gaussian_filter
 
     try:
         pv.start_xvfb(wait=0.2)
@@ -440,14 +442,26 @@ def render_isosurface_pore(vol: np.ndarray, group: str, out_raw: Path, parallel_
 
     pore_mask = (vol == 0).astype(np.float32)
     step = DOWNSAMPLE
-    v = pore_mask[::step, ::step, ::step]
-    v = gaussian_filter(v, sigma=0.6)
+    if any(n % step != 0 for n in pore_mask.shape):
+        raise RuntimeError(f"[render:{group}] volume shape {pore_mask.shape} is not evenly "
+                            f"divisible by DOWNSAMPLE={step} -- cannot block-average")
+
+    nz, ny, nx = pore_mask.shape
+    # Fixed, deterministic block-occupancy averaging (no Gaussian/cosmetic
+    # smoothing): each output cell is the exact mean pore occupancy of its
+    # step^3 input block.
+    v = pore_mask.reshape(
+        nz // step, step,
+        ny // step, step,
+        nx // step, step,
+    ).mean(axis=(1, 3, 5))
     if v.min() >= 0.5 or v.max() <= 0.5:
         raise RuntimeError(f"[render:{group}] degenerate iso-level for the pore phase after "
-                            f"downsample+smoothing -- cannot extract a level=0.5 isosurface")
+                            f"block-occupancy downsampling -- cannot extract a level=0.5 isosurface")
 
-    verts, faces, _, _ = measure.marching_cubes(v, level=0.5)
-    verts = verts * step                                    # back to voxel units
+    # spacing=(step, step, step) restores vertex coordinates directly to
+    # original voxel units, so no separate verts * step rescale is needed.
+    verts, faces, _, _ = measure.marching_cubes(v, level=0.5, spacing=(step, step, step))
     faces_pv = np.hstack([np.full((faces.shape[0], 1), 3, np.int64), faces.astype(np.int64)])
     mesh = pv.PolyData(verts, faces_pv)
 
@@ -677,7 +691,7 @@ def plot_curve_pair(ax, curves, title, xlabel, ylabel, show_legend=False):
 def build_panel_b(fig, card, s2_curves, c2_curves):
     bx_, by_, bw_, bh_ = card
     header_y = by_ + bh_ - 0.020
-    fig.text(bx_ + 0.014, header_y, "Long-range structure (512³)",
+    fig.text(bx_ + 0.014, header_y, "Long-range structure",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
 
     b_pl, b_pr, b_pt, b_pb, b_gx = 0.048, 0.020, 0.058, 0.052, 0.062
@@ -739,7 +753,7 @@ def load_rev_scale():
 def build_panel_c(fig, card, rev_data):
     cx_, cy_, cw_, ch_ = card
     header_y = cy_ + ch_ - 0.020
-    fig.text(cx_ + 0.014, header_y, "Scale-dependent heterogeneity (within 512³)",
+    fig.text(cx_ + 0.014, header_y, "Scale-dependent heterogeneity",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
 
     legend_handles = [Patch(facecolor=COLORS[g], edgecolor=COLORS[g], alpha=0.85, label=LABELS[g])
@@ -842,10 +856,13 @@ def resolve_panel_d():
 def build_panel_d(fig, card, rows):
     dx_, dy_, dw_, dh_ = card
     header_y = dy_ + dh_ - 0.020
-    fig.text(dx_ + 0.014, header_y, "Physical trade-off at 512³",
+    fig.text(dx_ + 0.014, header_y, "Physical-property fidelity",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
 
     legend_handles = [
+        Line2D([0], [0], marker="o", linestyle="None", markersize=6.0,
+               markerfacecolor="none", markeredgecolor=SUBTEXT, markeredgewidth=1.1,
+               label=LABELS["real"]),
         Line2D([0], [0], marker=MARKERS["poredit"], linestyle="None", markersize=6.5,
                markerfacecolor=COLORS["poredit"], markeredgecolor="black", markeredgewidth=0.8,
                label=LABELS["poredit"]),
@@ -855,37 +872,51 @@ def build_panel_d(fig, card, rows):
     ]
     fig.legend(handles=legend_handles, loc="upper right",
               bbox_to_anchor=(dx_ + dw_ - 0.010, header_y + 0.006),
-              bbox_transform=fig.transFigure, ncol=2, frameon=True,
+              bbox_transform=fig.transFigure, ncol=3, frameon=True,
               facecolor="white", edgecolor=SPINE, framealpha=0.94,
               borderpad=0.45, labelspacing=0.3, columnspacing=1.0,
               handlelength=1.2, handletextpad=0.5, fontsize=7.2).get_frame().set_linewidth(0.6)
 
-    pad_l, pad_r, pad_t, pad_b = 0.165, 0.030, 0.075, 0.062
+    pad_l, pad_r, pad_t, pad_b = 0.118, 0.030, 0.075, 0.062
     ax = fig.add_axes([dx_ + pad_l, dy_ + pad_b, dw_ - pad_l - pad_r, dh_ - pad_t - pad_b])
     style_axis(ax, grid=False)
     ax.grid(True, axis="x", color=GRID, linewidth=0.55, alpha=0.9)
     ax.set_axisbelow(True)
-    ax.set_xlabel("Generated / reference mean", color=SUBTEXT)
+    ax.set_xlabel("Generated / reference mean  (1 = reference)", color=SUBTEXT, fontsize=7.6)
     ax.tick_params(axis="x", labelsize=7.2)
 
     n = len(rows)
     ys = np.arange(n)[::-1]  # first row on top
     any_plotted = False
+    all_ratios = []
     for y, entry in zip(ys, rows):
-        for g, dy_off in (("poredit", 0.13), ("survol", -0.13)):
+        # Neutral open Reference marker at the x=1 baseline for every row,
+        # plus a thin connector from that baseline out to each generated
+        # model's ratio -- makes deviation-from-reference the visual point.
+        ax.scatter([1.0], [y], s=55, marker="o", facecolor="none",
+                   edgecolors=SUBTEXT, linewidths=1.1, zorder=4)
+        for g, dy_off, connector_alpha in (("poredit", 0.13, 0.40), ("survol", -0.13, 0.40)):
             r = entry["ratios"].get(g)
             if r is None:
                 continue
+            ax.plot([1.0, r], [y + dy_off, y + dy_off], color=COLORS[g],
+                    linewidth=0.9, alpha=connector_alpha, zorder=3, solid_capstyle="round")
             ax.scatter([r], [y + dy_off], s=90, marker=MARKERS[g], color=COLORS[g],
                        edgecolors="black", linewidths=0.9, zorder=5)
             any_plotted = True
+            all_ratios.append(r)
 
-    ax.axvline(1.0, color=SPINE, linewidth=1.1, linestyle=(0, (3, 2)), zorder=1)
+    ax.axvline(1.0, color=SPINE, linewidth=0.9, linestyle=(0, (3, 2)), zorder=1)
     ax.set_yticks(ys)
     ax.set_yticklabels([r["label"] for r in rows], fontsize=8.0)
     ax.set_ylim(-0.6, n - 0.4)
 
-    if not any_plotted:
+    if any_plotted:
+        lo = min([1.0] + all_ratios)
+        hi = max([1.0] + all_ratios)
+        pad = max(0.08, 0.12 * (hi - lo))
+        ax.set_xlim(lo - pad, hi + pad)
+    else:
         draw_unavailable(ax)
 
 
@@ -949,7 +980,7 @@ def load_correlation_discrepancy():
 def build_panel_e(fig, card, diversity, correlation):
     ex_, ey_, ew_, eh_ = card
     header_y = ey_ + eh_ - 0.020
-    fig.text(ex_ + 0.014, header_y, "Ensemble representativeness (512³)",
+    fig.text(ex_ + 0.014, header_y, "Ensemble representativeness",
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
 
     e_pl, e_pr, e_pt, e_pb, e_gx = 0.058, 0.025, 0.078, 0.078, 0.075
@@ -978,25 +1009,34 @@ def build_panel_e(fig, card, diversity, correlation):
         positions = [1, 2]
         for pos, g in zip(positions, ("poredit", "survol")):
             vals = diversity[g]
-            ax_left.boxplot([vals], positions=[pos], widths=0.50, patch_artist=True, showfliers=False,
-                            medianprops=dict(color=TEXT, linewidth=1.2),
-                            whiskerprops=dict(color=COLORS[g], linewidth=1.0),
-                            capprops=dict(color=COLORS[g], linewidth=1.0),
-                            boxprops=dict(facecolor=COLORS[g], edgecolor=COLORS[g],
-                                          alpha=0.32, linewidth=1.0), zorder=3)
+            bp = ax_left.boxplot([vals], positions=[pos], widths=0.50, patch_artist=True,
+                                 showfliers=False,
+                                 medianprops=dict(color=TEXT, linewidth=1.2),
+                                 whiskerprops=dict(color=COLORS[g], linewidth=1.0),
+                                 capprops=dict(color=COLORS[g], linewidth=1.0),
+                                 boxprops=dict(facecolor=COLORS[g], edgecolor=COLORS[g],
+                                               alpha=0.32, linewidth=1.0), zorder=3)
             jitter = pos + (rng.random(vals.size) - 0.5) * 0.26
             ax_left.scatter(jitter, vals, s=8.0, color=COLORS[g], alpha=0.55,
                             edgecolors="none", zorder=2)
+            # Small median annotation, computed from the loaded CSV (never
+            # hardcoded), placed just above the upper whisker cap.
+            median_val = float(np.median(vals))
+            cap_top = float(bp["caps"][1].get_ydata()[0])
+            ax_left.text(pos, cap_top * 1.12, f"med {median_val:.3f}", ha="center", va="bottom",
+                        fontsize=6.2, color=SUBTEXT)
         ax_left.set_xticks(positions)
         ax_left.set_xticklabels([LABELS["poredit"], LABELS["survol"]], fontsize=7.6)
         ax_left.set_xlim(0.4, 2.6)
+        ax_left.margins(y=0.30)
 
     # ---- e-right: cross-property correlation discrepancy -----------------
     style_axis(ax_right, grid=False)
     ax_right.grid(True, axis="y", color=GRID, linewidth=0.55, alpha=0.9)
     ax_right.set_axisbelow(True)
-    ax_right.set_title("Cross-property correlation", pad=4.5, color=TEXT, fontweight="bold", fontsize=8.6)
-    ax_right.set_ylabel("Mean |Δ correlation|", color=SUBTEXT, fontsize=7.2)
+    ax_right.set_title("Cross-property correlation error", pad=4.5, color=TEXT, fontweight="bold",
+                       fontsize=8.6)
+    ax_right.set_ylabel("Mean |Δ correlation| ↓", color=SUBTEXT, fontsize=7.2)
 
     if correlation is None:
         draw_unavailable(ax_right)
