@@ -860,9 +860,6 @@ def build_panel_d(fig, card, rows):
              ha="left", va="top", fontsize=9.8, fontweight="bold", color=TEXT)
 
     legend_handles = [
-        Line2D([0], [0], marker="o", linestyle="None", markersize=6.0,
-               markerfacecolor="none", markeredgecolor=SUBTEXT, markeredgewidth=1.1,
-               label=LABELS["real"]),
         Line2D([0], [0], marker=MARKERS["poredit"], linestyle="None", markersize=6.5,
                markerfacecolor=COLORS["poredit"], markeredgecolor="black", markeredgewidth=0.8,
                label=LABELS["poredit"]),
@@ -872,7 +869,7 @@ def build_panel_d(fig, card, rows):
     ]
     fig.legend(handles=legend_handles, loc="upper right",
               bbox_to_anchor=(dx_ + dw_ - 0.010, header_y + 0.006),
-              bbox_transform=fig.transFigure, ncol=3, frameon=True,
+              bbox_transform=fig.transFigure, ncol=2, frameon=True,
               facecolor="white", edgecolor=SPINE, framealpha=0.94,
               borderpad=0.45, labelspacing=0.3, columnspacing=1.0,
               handlelength=1.2, handletextpad=0.5, fontsize=7.2).get_frame().set_linewidth(0.6)
@@ -890,11 +887,9 @@ def build_panel_d(fig, card, rows):
     any_plotted = False
     all_ratios = []
     for y, entry in zip(ys, rows):
-        # Neutral open Reference marker at the x=1 baseline for every row,
-        # plus a thin connector from that baseline out to each generated
-        # model's ratio -- makes deviation-from-reference the visual point.
-        ax.scatter([1.0], [y], s=55, marker="o", facecolor="none",
-                   edgecolors=SUBTEXT, linewidths=1.1, zorder=4)
+        # A thin connector from the x=1 reference baseline out to each
+        # generated model's ratio makes deviation-from-reference the visual
+        # point, without needing a separate marker glyph at x=1 itself.
         for g, dy_off, connector_alpha in (("poredit", 0.13, 0.40), ("survol", -0.13, 0.40)):
             r = entry["ratios"].get(g)
             if r is None:
@@ -906,7 +901,9 @@ def build_panel_d(fig, card, rows):
             any_plotted = True
             all_ratios.append(r)
 
-    ax.axvline(1.0, color=SPINE, linewidth=0.9, linestyle=(0, (3, 2)), zorder=1)
+    # The x=1 line is now the sole reference cue (no separate marker glyph),
+    # so it is drawn a bit bolder/more visible than the earlier faint version.
+    ax.axvline(1.0, color=SUBTEXT, linewidth=1.3, linestyle=(0, (3, 2)), alpha=0.8, zorder=2)
     ax.set_yticks(ys)
     ax.set_yticklabels([r["label"] for r in rows], fontsize=8.0)
     ax.set_ylim(-0.6, n - 0.4)
@@ -1009,26 +1006,19 @@ def build_panel_e(fig, card, diversity, correlation):
         positions = [1, 2]
         for pos, g in zip(positions, ("poredit", "survol")):
             vals = diversity[g]
-            bp = ax_left.boxplot([vals], positions=[pos], widths=0.50, patch_artist=True,
-                                 showfliers=False,
-                                 medianprops=dict(color=TEXT, linewidth=1.2),
-                                 whiskerprops=dict(color=COLORS[g], linewidth=1.0),
-                                 capprops=dict(color=COLORS[g], linewidth=1.0),
-                                 boxprops=dict(facecolor=COLORS[g], edgecolor=COLORS[g],
-                                               alpha=0.32, linewidth=1.0), zorder=3)
+            ax_left.boxplot([vals], positions=[pos], widths=0.50, patch_artist=True,
+                            showfliers=False,
+                            medianprops=dict(color=TEXT, linewidth=1.2),
+                            whiskerprops=dict(color=COLORS[g], linewidth=1.0),
+                            capprops=dict(color=COLORS[g], linewidth=1.0),
+                            boxprops=dict(facecolor=COLORS[g], edgecolor=COLORS[g],
+                                          alpha=0.32, linewidth=1.0), zorder=3)
             jitter = pos + (rng.random(vals.size) - 0.5) * 0.26
             ax_left.scatter(jitter, vals, s=8.0, color=COLORS[g], alpha=0.55,
                             edgecolors="none", zorder=2)
-            # Small median annotation, computed from the loaded CSV (never
-            # hardcoded), placed just above the upper whisker cap.
-            median_val = float(np.median(vals))
-            cap_top = float(bp["caps"][1].get_ydata()[0])
-            ax_left.text(pos, cap_top * 1.12, f"med {median_val:.3f}", ha="center", va="bottom",
-                        fontsize=6.2, color=SUBTEXT)
         ax_left.set_xticks(positions)
         ax_left.set_xticklabels([LABELS["poredit"], LABELS["survol"]], fontsize=7.6)
         ax_left.set_xlim(0.4, 2.6)
-        ax_left.margins(y=0.30)
 
     # ---- e-right: cross-property correlation discrepancy -----------------
     style_axis(ax_right, grid=False)
