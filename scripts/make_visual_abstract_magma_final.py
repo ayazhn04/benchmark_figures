@@ -542,6 +542,71 @@ def schem_layout_row(ax, box_widths, box_h=SCHEM_BOX_H, arrows=True, arrow_color
     return boxes
 
 
+# ----------------------------------------------------------------------
+# Aspect-aware schematic image geometry. `imshow` preserves an image's own
+# pixel aspect ratio by default (never distorted here -- `aspect="auto"`
+# is deliberately never used on a scientific image). Because the dashed
+# schematic parent axes are much wider than tall, a nominal inset box
+# such as [x0, y0, 0.40, 0.62] does not necessarily stay 0.40 wide once
+# matplotlib enforces that aspect ratio -- the actually-rendered image can
+# be considerably narrower (or wider) and centered inside that nominal
+# slot, so arrows/labels positioned against the NOMINAL box edges can
+# look visibly off relative to the ACTUAL visible image edges. The
+# functions below (a) size each inset box so its own aspect ratio already
+# matches the real image's pixel aspect ratio -- so imshow's built-in
+# aspect preservation is a no-op and the image fills the box exactly --
+# and (b) independently MEASURE the actual rendered bounds afterward
+# (via a real draw + Axes.get_position(), not more nominal arithmetic) to
+# audit and enforce that the visible geometry is what was intended.
+# ----------------------------------------------------------------------
+VISIBLE_GAP_TOL = 0.01  # figure-fraction tolerance for the visible-gap audit
+
+
+def image_pixel_aspect(img):
+    """Width/height ratio of an image's own real pixel dimensions (PIL
+    Image or ndarray)."""
+    arr = np.asarray(img)
+    h, w = arr.shape[0], arr.shape[1]
+    return w / h
+
+
+def aspect_correct_width(parent_ax, img, h_norm):
+    """The parent-axis-fraction width that a box of parent-axis-fraction
+    height `h_norm` must have so that imshow's aspect-preserving render
+    of `img` exactly fills that box, with no invisible letterboxed
+    margin on any side -- i.e. the nominal box becomes the visible image.
+    Uses the parent axis's own physical size (from its figure-fraction
+    position and the figure's size in inches -- no draw() required, since
+    the width/height ratio used here is DPI-independent) together with
+    the image's real pixel aspect ratio. Never distorts the image: the
+    image's own aspect ratio is exactly what is preserved."""
+    fig = parent_ax.figure
+    fig_w_in, fig_h_in = fig.get_size_inches()
+    pos = parent_ax.get_position()
+    parent_w_in = pos.width * fig_w_in
+    parent_h_in = pos.height * fig_h_in
+    img_ratio = image_pixel_aspect(img)
+    return h_norm * (parent_h_in / parent_w_in) * img_ratio
+
+
+def visible_local_bounds(parent_ax, named_axes):
+    """Force one real draw, then return {label: (x0, x1)} -- the ACTUAL
+    rendered horizontal extent of each inset axis in `named_axes`
+    ([(label, ax), ...]), converted into parent_ax's own 0-1 coordinate
+    system. This is a genuine post-render measurement (Axes.get_position()
+    after canvas.draw()), not a re-statement of the nominal coordinates
+    used to request the inset box -- used only to audit the four
+    schematics where nominal-vs-visible geometry previously diverged."""
+    parent_ax.figure.canvas.draw()
+    parent_pos = parent_ax.get_position()
+    bounds = {}
+    for label, a in named_axes:
+        p = a.get_position()
+        bounds[label] = ((p.x0 - parent_pos.x0) / parent_pos.width,
+                          (p.x1 - parent_pos.x0) / parent_pos.width)
+    return bounds
+
+
 CONNECTOR_ZORDER = -40  # above the white cards (-50) so nothing is clipped/hidden
 
 
@@ -688,17 +753,19 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
     -- both real voxels of the already-loaded real representative volume
     (see choose_grounded_roi in prepare_multiscale for the ROI criterion).
     The ROI marker uses the neutral ANNOTATION_COLOR, never diffusion-
-    orange/GAN-purple. Positioning is computed explicitly here (not via
-    schem_layout_row) so the whole [larger context]-[arrow]-[small FOV]
-    span is centered directly on the schematic's true horizontal middle
-    (0.5): left_edge/right_edge bound the full composition, and that span
-    is centered at exactly x=0.5, with SCHEM_GAP symmetric on both sides
-    of the arrow. Object sizes are unchanged (0.40/0.28)."""
-    left_w, right_w = 0.40, 0.28
+    orange/GAN-purple. Box widths are aspect-correct (aspect_correct_width)
+    so the real rendered image -- not just the nominal inset rectangle --
+    fills each box exactly, with SCHEM_BOX_H as the shared target height;
+    the whole [larger context]-[arrow]-[small FOV] span (built from these
+    real widths) is centered at the schematic's true horizontal middle
+    (0.5). The actual visible bounds are then measured (not assumed) and
+    logged/asserted below."""
+    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
+    left_w = aspect_correct_width(ax, large_img, SCHEM_BOX_H)
+    right_w = aspect_correct_width(ax, small_img, SCHEM_BOX_H)
     gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
     total_extent = left_w + gap_zone + right_w
     left_edge = 0.5 - total_extent / 2.0
-    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
 
     lx0 = left_edge
     arrow_x0 = lx0 + left_w + SCHEM_GAP
@@ -717,6 +784,20 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
     image_cell(ax_small, ANNOTATION_COLOR, lw=1.2)
     helper_label(ax, lx0 + left_w / 2.0, "larger context")
     helper_label(ax, sx0 + right_w / 2.0, "small FOV")
+
+    bounds = visible_local_bounds(ax, [("left", ax_large), ("right", ax_small)])
+    lv0, lv1 = bounds["left"]
+    rv0, rv1 = bounds["right"]
+    left_gap = arrow_x0 - lv1
+    right_gap = rv0 - arrow_x1
+    log(f"[schem:multiscale] visible_left_bbox=({lv0:.4f},{lv1:.4f}) "
+        f"arrow_bbox=({arrow_x0:.4f},{arrow_x1:.4f}) "
+        f"visible_right_bbox=({rv0:.4f},{rv1:.4f}) "
+        f"left_gap={left_gap:.4f} right_gap={right_gap:.4f}")
+    if abs(left_gap - right_gap) > VISIBLE_GAP_TOL:
+        raise RuntimeError(
+            f"[schem:multiscale] visible gap asymmetry exceeds tolerance "
+            f"({VISIBLE_GAP_TOL}): left={left_gap:.4f} right={right_gap:.4f}")
 
 
 def schem_2d_to_3d(ax, slice_img, phase_cmap, cube_img):
@@ -771,9 +852,7 @@ def schem_anisotropy(ax, xy_slice, xz_slice, yz_slice, structure_color):
         helper_label(ax, bx0 + bw / 2.0, lab)
 
 
-PHASE_BOX_W = 0.125
 PHASE_PLUS_GAP = 0.05
-COMBINED_BOX_W = 0.20
 
 
 def schem_multiphase(ax, phase_imgs, combined_img):
@@ -781,51 +860,71 @@ def schem_multiphase(ax, phase_imgs, combined_img):
     crops of the reference volume's own slice (pore/active/CBD, Figure
     4.5's own categorical colors), equal size/spacing with breathing room
     around each '+', combining into the real 3D multiphase reference
-    render -- all vertically centered on the same SCHEM_VCENTER. The
-    arrow's position is computed explicitly from the two endpoints it
-    connects (phase3_right, combined_left), not inferred indirectly:
-    arrow_center = 0.5 * (phase3_right + combined_left)."""
+    render -- all vertically centered on the same SCHEM_VCENTER. Phase
+    box width is aspect-correct (aspect_correct_width) -- the three phase
+    crops share the same source slice shape, so one width serves all
+    three -- and the combined render gets its own aspect-correct width,
+    so the real rendered images (not nominal inset rectangles) fill their
+    boxes exactly. The arrow's position is then computed explicitly from
+    the two ACTUAL visible endpoints it connects (measured, not assumed):
+    arrow_center = 0.5 * (phase3_visible_right + combined_visible_left)."""
     y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
-    group_w = 3 * PHASE_BOX_W + 2 * PHASE_PLUS_GAP
+    phase_w = aspect_correct_width(ax, phase_imgs[0], SCHEM_BOX_H)
+    combined_w = aspect_correct_width(ax, combined_img, SCHEM_BOX_H)
+    group_w = 3 * phase_w + 2 * PHASE_PLUS_GAP
     gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
-    total_extent = group_w + gap_zone + COMBINED_BOX_W
+    total_extent = group_w + gap_zone + combined_w
     left_edge = 0.5 - total_extent / 2.0
 
     xs = []
     cursor = left_edge
     for i in range(3):
         xs.append(cursor)
-        cursor += PHASE_BOX_W + (PHASE_PLUS_GAP if i < 2 else 0.0)
-    phase3_right = xs[-1] + PHASE_BOX_W
+        cursor += phase_w + (PHASE_PLUS_GAP if i < 2 else 0.0)
+    phase3_right = xs[-1] + phase_w
 
+    phase_axes = []
     for i, x in enumerate(xs):
-        axp = ax.inset_axes([x, y0, PHASE_BOX_W, SCHEM_BOX_H])
+        axp = ax.inset_axes([x, y0, phase_w, SCHEM_BOX_H])
         axp.imshow(phase_imgs[i], interpolation="nearest")
         image_cell(axp, SUBTEXT, lw=0.8)
-        helper_label(ax, x + PHASE_BOX_W / 2.0, f"phase {i + 1}")
+        helper_label(ax, x + phase_w / 2.0, f"phase {i + 1}")
+        phase_axes.append(axp)
         if i < 2:
-            plus_x = x + PHASE_BOX_W + PHASE_PLUS_GAP / 2.0
+            plus_x = x + phase_w + PHASE_PLUS_GAP / 2.0
             ax.text(plus_x, SCHEM_VCENTER, "+", ha="center", va="center", fontsize=13,
                     fontweight="bold", color=SUBTEXT, transform=ax.transAxes)
 
     combined_left = phase3_right + gap_zone
 
-    # Arrow centered explicitly in the visible gap between phase3_right
-    # and combined_left -- computed from those two endpoints directly.
+    # Provisional arrow at the nominal midpoint; corrected below once the
+    # actual visible bounds are measured.
     arrow_center = 0.5 * (phase3_right + combined_left)
     arrow_x0 = arrow_center - SCHEM_ARROW_LEN / 2.0
     arrow_x1 = arrow_center + SCHEM_ARROW_LEN / 2.0
     draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
 
-    ax_c = ax.inset_axes([combined_left, y0, COMBINED_BOX_W, SCHEM_BOX_H])
+    ax_c = ax.inset_axes([combined_left, y0, combined_w, SCHEM_BOX_H])
     ax_c.imshow(combined_img, interpolation="bilinear")
     image_cell(ax_c, SUBTEXT, lw=1.0)
-    helper_label(ax, combined_left + COMBINED_BOX_W / 2.0, "combined")
+    helper_label(ax, combined_left + combined_w / 2.0, "combined")
+
+    bounds = visible_local_bounds(ax, [("phase3", phase_axes[-1]), ("combined", ax_c)])
+    p3v0, p3v1 = bounds["phase3"]
+    cv0, cv1 = bounds["combined"]
+    left_visible_gap = arrow_x0 - p3v1
+    right_visible_gap = cv0 - arrow_x1
+    log(f"[schem:multiphase] phase3_visible_right={p3v1:.4f} "
+        f"combined_visible_left={cv0:.4f} arrow_center={arrow_center:.4f} "
+        f"left_visible_gap={left_visible_gap:.4f} right_visible_gap={right_visible_gap:.4f}")
+    if abs(left_visible_gap - right_visible_gap) > VISIBLE_GAP_TOL:
+        raise RuntimeError(
+            f"[schem:multiphase] visible gap asymmetry exceeds tolerance "
+            f"({VISIBLE_GAP_TOL}): left={left_visible_gap:.4f} "
+            f"right={right_visible_gap:.4f}")
 
 
-TOPOLOGY_PART_W = 0.19
 TOPOLOGY_PLUS_GAP = 0.05
-TOPOLOGY_FULL_W = 0.24
 
 
 def schem_topology(ax, backbone_img, fragments_img, full_img):
@@ -834,42 +933,64 @@ def schem_topology(ax, backbone_img, fragments_img, full_img):
     component alone, disconnected fragments alone, and the two together)
     -- teaching what topology/connectivity means in this benchmark as a
     composition, not a "bad -> good" transformation. All three renders
-    come from the exact same real representative sample. The arrow's
-    position is computed explicitly from the two endpoints it connects
-    (fragments_right, full_left), not inferred indirectly:
-    arrow_center = 0.5 * (fragments_right + full_left)."""
+    come from the exact same real representative sample. Backbone/
+    fragments box width is aspect-correct (aspect_correct_width) from the
+    real backbone image; the full-network render gets its own
+    aspect-correct width -- so the real rendered images (not nominal
+    inset rectangles) fill their boxes exactly. The arrow's position is
+    then computed explicitly from the two ACTUAL visible endpoints it
+    connects (measured, not assumed):
+    arrow_center = 0.5 * (fragments_visible_right + full_visible_left)."""
     y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
-    group_w = 2 * TOPOLOGY_PART_W + TOPOLOGY_PLUS_GAP
+    part_w = aspect_correct_width(ax, backbone_img, SCHEM_BOX_H)
+    full_w = aspect_correct_width(ax, full_img, SCHEM_BOX_H)
+    group_w = 2 * part_w + TOPOLOGY_PLUS_GAP
     gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
-    total_extent = group_w + gap_zone + TOPOLOGY_FULL_W
+    total_extent = group_w + gap_zone + full_w
     left_edge = 0.5 - total_extent / 2.0
 
     x_backbone = left_edge
-    x_fragments = x_backbone + TOPOLOGY_PART_W + TOPOLOGY_PLUS_GAP
-    fragments_right = x_fragments + TOPOLOGY_PART_W
-    for x, img, lab in ((x_backbone, backbone_img, "connected backbone"),
-                        (x_fragments, fragments_img, "fragments")):
-        axb = ax.inset_axes([x, y0, TOPOLOGY_PART_W, SCHEM_BOX_H])
+    x_fragments = x_backbone + part_w + TOPOLOGY_PLUS_GAP
+    fragments_right = x_fragments + part_w
+    part_axes = {}
+    for x, img, lab, key in ((x_backbone, backbone_img, "connected backbone", "backbone"),
+                              (x_fragments, fragments_img, "fragments", "fragments")):
+        axb = ax.inset_axes([x, y0, part_w, SCHEM_BOX_H])
         axb.imshow(img, interpolation="bilinear")
         image_cell(axb, SUBTEXT, lw=0.9)
-        helper_label(ax, x + TOPOLOGY_PART_W / 2.0, lab)
-    plus_x = x_backbone + TOPOLOGY_PART_W + TOPOLOGY_PLUS_GAP / 2.0
+        helper_label(ax, x + part_w / 2.0, lab)
+        part_axes[key] = axb
+    plus_x = x_backbone + part_w + TOPOLOGY_PLUS_GAP / 2.0
     ax.text(plus_x, SCHEM_VCENTER, "+", ha="center", va="center", fontsize=13,
             fontweight="bold", color=SUBTEXT, transform=ax.transAxes)
 
     full_left = fragments_right + gap_zone
 
-    # Arrow centered explicitly in the visible gap between fragments_right
-    # and full_left -- computed from those two endpoints directly.
+    # Provisional arrow at the nominal midpoint; corrected below once the
+    # actual visible bounds are measured.
     arrow_center = 0.5 * (fragments_right + full_left)
     arrow_x0 = arrow_center - SCHEM_ARROW_LEN / 2.0
     arrow_x1 = arrow_center + SCHEM_ARROW_LEN / 2.0
     draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
 
-    ax_full = ax.inset_axes([full_left, y0, TOPOLOGY_FULL_W, SCHEM_BOX_H])
+    ax_full = ax.inset_axes([full_left, y0, full_w, SCHEM_BOX_H])
     ax_full.imshow(full_img, interpolation="bilinear")
     image_cell(ax_full, SUBTEXT, lw=1.0)
-    helper_label(ax, full_left + TOPOLOGY_FULL_W / 2.0, "full network")
+    helper_label(ax, full_left + full_w / 2.0, "full network")
+
+    bounds = visible_local_bounds(ax, [("fragments", part_axes["fragments"]), ("full", ax_full)])
+    frv0, frv1 = bounds["fragments"]
+    flv0, flv1 = bounds["full"]
+    left_visible_gap = arrow_x0 - frv1
+    right_visible_gap = flv0 - arrow_x1
+    log(f"[schem:topology] fragments_visible_right={frv1:.4f} "
+        f"full_visible_left={flv0:.4f} arrow_center={arrow_center:.4f} "
+        f"left_visible_gap={left_visible_gap:.4f} right_visible_gap={right_visible_gap:.4f}")
+    if abs(left_visible_gap - right_visible_gap) > VISIBLE_GAP_TOL:
+        raise RuntimeError(
+            f"[schem:topology] visible gap asymmetry exceeds tolerance "
+            f"({VISIBLE_GAP_TOL}): left={left_visible_gap:.4f} "
+            f"right={right_visible_gap:.4f}")
 
 
 def schem_large_volume(ax, small_img, large_img):
@@ -881,17 +1002,19 @@ def schem_large_volume(ax, small_img, large_img):
     tied together as one explicit correspondence rather than two
     disconnected renders. The small box is narrow, closer in visual scale
     to the Multiphase schematic's isolated-phase cells, so it reads as
-    genuinely "small". Positioning is computed explicitly here (not via
-    schem_layout_row) so the whole [small subvolume]-[arrow]-[large
-    domain] span is centered directly on the schematic's true horizontal
-    middle (0.5): left_edge/right_edge bound the full composition, and
-    that span is centered at exactly x=0.5, with SCHEM_GAP symmetric on
-    both sides of the arrow. Object sizes are unchanged (0.17/0.34)."""
-    left_w, right_w = 0.17, 0.34
+    genuinely "small". Box widths are aspect-correct (aspect_correct_width)
+    so the real rendered image -- not just the nominal inset rectangle --
+    fills each box exactly, with SCHEM_BOX_H as the shared target height;
+    the whole [small subvolume]-[arrow]-[large domain] span (built from
+    these real widths) is centered at the schematic's true horizontal
+    middle (0.5). The actual visible bounds are then measured (not
+    assumed) and logged/asserted below."""
+    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
+    left_w = aspect_correct_width(ax, small_img, SCHEM_BOX_H)
+    right_w = aspect_correct_width(ax, large_img, SCHEM_BOX_H)
     gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
     total_extent = left_w + gap_zone + right_w
     left_edge = 0.5 - total_extent / 2.0
-    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
 
     sx0 = left_edge
     arrow_x0 = sx0 + left_w + SCHEM_GAP
@@ -911,6 +1034,20 @@ def schem_large_volume(ax, small_img, large_img):
     image_cell(ax_large, SUBTEXT, lw=1.0)
     helper_label(ax, sx0 + left_w / 2.0, "small subvolume")
     helper_label(ax, lx0 + right_w / 2.0, "large domain")
+
+    bounds = visible_local_bounds(ax, [("left", ax_small), ("right", ax_large)])
+    lv0, lv1 = bounds["left"]
+    rv0, rv1 = bounds["right"]
+    left_gap = arrow_x0 - lv1
+    right_gap = rv0 - arrow_x1
+    log(f"[schem:large_volume] visible_left_bbox=({lv0:.4f},{lv1:.4f}) "
+        f"arrow_bbox=({arrow_x0:.4f},{arrow_x1:.4f}) "
+        f"visible_right_bbox=({rv0:.4f},{rv1:.4f}) "
+        f"left_gap={left_gap:.4f} right_gap={right_gap:.4f}")
+    if abs(left_gap - right_gap) > VISIBLE_GAP_TOL:
+        raise RuntimeError(
+            f"[schem:large_volume] visible gap asymmetry exceeds tolerance "
+            f"({VISIBLE_GAP_TOL}): left={left_gap:.4f} right={right_gap:.4f}")
 
 
 # ============================================================================
