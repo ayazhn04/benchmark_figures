@@ -173,11 +173,12 @@ DIFFUSION = "#F2A93B"
 GAN = "#772A8E"
 
 # Neutral annotation color for schematic ROI/subvolume/bounding-box
-# markers -- deliberately NOT orange or purple, since those are reserved
-# throughout the paper for diffusion/GAN model identity and must never
-# appear on a challenge-schematic annotation that has nothing to do with
-# either model family.
-ANNOTATION_COLOR = "#3B7EA1"
+# markers -- deliberately NOT the diffusion or GAN model color, but a warm,
+# clearly visible amber/copper already used elsewhere in this same figure
+# for the "active" phase in the multiphase/2D->3D schematics (Figure 4.2/
+# 4.5's own PHASE_COLORS[1]), so it reads as an established, grounded
+# accent rather than diffusion-orange or an arbitrary new hue.
+ANNOTATION_COLOR = "#E0792A"
 
 CARD_LW = 0.9
 HUB_LW = 1.4
@@ -187,7 +188,7 @@ CONNECTOR_COLOR = "#9483B0"
 # Restrained gray for the small in-schematic helper labels ("small FOV",
 # "LR"/"HR", "phase 1", ...) -- support text, never competing with the
 # task title or the model-name labels.
-HELPER_GRAY = "#948C9E"
+HELPER_GRAY = "#726A80"
 HELPER_FONTSIZE = 5.6
 
 FIG_W, FIG_H = 17.8, 10.2
@@ -704,8 +705,10 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
 
 def schem_2d_to_3d(ax, slice_img, phase_cmap, cube_img):
     """A real Section 4.2 reference 2D slice (categorical phase colors) ->
-    a real cutaway cube rendered from that same real reference volume."""
-    (sx0, sy0, sw, sh), (cx0, cy0, cw, ch) = schem_layout_row(ax, [0.30, 0.34])
+    a real cutaway cube rendered from that same real reference volume.
+    Equal box widths so the arrow sits exactly on the schematic's
+    horizontal middle, with identical spacing on both sides."""
+    (sx0, sy0, sw, sh), (cx0, cy0, cw, ch) = schem_layout_row(ax, [0.32, 0.32])
     ax_slice = ax.inset_axes([sx0, sy0, sw, sh])
     ax_slice.imshow(slice_img, cmap=phase_cmap, vmin=0, vmax=2, interpolation="nearest")
     image_cell(ax_slice, SUBTEXT, lw=1.0)
@@ -752,9 +755,9 @@ def schem_anisotropy(ax, xy_slice, xz_slice, yz_slice, structure_color):
         helper_label(ax, bx0 + bw / 2.0, lab)
 
 
-PHASE_BOX_W = 0.11
-PHASE_PLUS_GAP = 0.025
-COMBINED_BOX_W = 0.22
+PHASE_BOX_W = 0.125
+PHASE_PLUS_GAP = 0.05
+COMBINED_BOX_W = 0.20
 
 
 def schem_multiphase(ax, phase_imgs, combined_img):
@@ -796,8 +799,8 @@ def schem_multiphase(ax, phase_imgs, combined_img):
 
 
 TOPOLOGY_PART_W = 0.19
-TOPOLOGY_PLUS_GAP = 0.03
-TOPOLOGY_FULL_W = 0.26
+TOPOLOGY_PLUS_GAP = 0.05
+TOPOLOGY_FULL_W = 0.24
 
 
 def schem_topology(ax, backbone_img, fragments_img, full_img):
@@ -837,11 +840,13 @@ def schem_topology(ax, backbone_img, fragments_img, full_img):
 
 def schem_large_volume(ax, small_img, large_img):
     """A small real crop of the reference 512^3 volume -> the full real
-    reference volume rendered the same way, with a neutral-colored
-    wireframe bounding box on the large render marking exactly where the
-    small subvolume originates -- so the small-in-large correspondence is
-    explicit rather than two disconnected renders. Never orange/purple."""
-    (sx0, sy0, sw, sh), (lx0, ly0, lw, lh) = schem_layout_row(ax, [0.26, 0.34])
+    reference volume rendered the same way, with a clearly visible
+    ANNOTATION_COLOR wireframe bounding box on the large render marking
+    exactly where the small subvolume originates -- so the small-in-large
+    correspondence is explicit rather than two disconnected renders. The
+    small box is narrow, closer in visual scale to the Multiphase
+    schematic's isolated-phase cells, so it reads as genuinely "small"."""
+    (sx0, sy0, sw, sh), (lx0, ly0, lw, lh) = schem_layout_row(ax, [0.17, 0.34])
     ax_small = ax.inset_axes([sx0, sy0, sw, sh])
     ax_small.imshow(small_img, interpolation="bilinear")
     image_cell(ax_small, SUBTEXT, lw=1.0)
@@ -906,7 +911,7 @@ def prepare_multiscale(m1):
     real_vol = rep["real"]["vol"]
     large_img = binary_slice_u8(real_vol)
     large_bin01 = (large_img > 0).astype(np.uint8)
-    crop_size = max(4, int(min(large_bin01.shape) * 0.14))
+    crop_size = max(4, int(min(large_bin01.shape) * 0.20))
     r0, c0, ch, cw, roi_frac = choose_grounded_roi(large_bin01, crop_size)
     small_img = large_img[r0:r0 + ch, c0:c0 + cw]
     crop_box_px = (c0, r0, cw, ch)
@@ -1347,10 +1352,15 @@ SCHEMATIC_MODEL_GAP = 0.030
 # The "model unit" rhythm (MODEL NAME / small fixed gap / MODEL RENDER),
 # expressed as fractions of the renders slot's own height so it is
 # pixel-identical on all 14 model cells (7 panels x diffusion/GAN)
-# regardless of row direction or neighboring slot.
-MODEL_NAME_TOP_INSET = 0.11    # breathing room above the model-name text
+# regardless of row direction or neighboring slot. MODEL_UNIT_EDGE_INSET is
+# reserved at BOTH the top and bottom of the renders slot's content (not
+# only above the name) -- in the top row the slot's schematic-facing edge
+# is the render image's bottom, while in the bottom row it is the name's
+# top, so applying the SAME inset at both ends makes the schematic<->model
+# gap feel identical in both rows without depending on row direction.
+MODEL_UNIT_EDGE_INSET = 0.11   # breathing room at each outer edge of the model unit
 MODEL_NAME_LINE_H = 0.15       # band reserved for the model-name text itself
-MODEL_NAME_RENDER_GAP = 0.025  # small fixed gap between the name and its render
+MODEL_NAME_RENDER_GAP = 0.012  # small fixed gap between the name and its render (tight)
 
 
 def _slot_gap(key_a, key_b):
@@ -1380,10 +1390,13 @@ def draw_model_unit(fig, cell_x0, cell_w, ry0, rh, info):
     """One reusable 'model unit' -- MODEL NAME, [small fixed gap], MODEL
     RENDER -- used identically for all 14 model cells (7 panels x
     diffusion/GAN), so the name always visually belongs to its render
-    rather than floating above it, on the exact same rhythm everywhere."""
-    img_h = rh * (1.0 - MODEL_NAME_TOP_INSET - MODEL_NAME_LINE_H - MODEL_NAME_RENDER_GAP)
-    img_y0 = ry0
-    name_top_y = ry0 + rh - MODEL_NAME_TOP_INSET * rh
+    rather than floating above it, on the exact same rhythm everywhere.
+    MODEL_UNIT_EDGE_INSET is reserved at BOTH ends of the slot (see its
+    definition above) so the schematic-facing gap matches whether that
+    edge is the render (top row) or the name (bottom row)."""
+    img_h = rh * (1.0 - 2 * MODEL_UNIT_EDGE_INSET - MODEL_NAME_LINE_H - MODEL_NAME_RENDER_GAP)
+    img_y0 = ry0 + MODEL_UNIT_EDGE_INSET * rh
+    name_top_y = ry0 + rh - MODEL_UNIT_EDGE_INSET * rh
     fig.text(cell_x0 + cell_w / 2.0, name_top_y, info["label"],
               ha="center", va="top", fontsize=8.4, fontweight="bold", color=info["color"])
     ax = fig.add_axes([cell_x0, img_y0, cell_w, img_h])
