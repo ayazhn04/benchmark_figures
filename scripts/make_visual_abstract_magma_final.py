@@ -803,17 +803,49 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
 def schem_2d_to_3d(ax, slice_img, phase_cmap, cube_img):
     """A real Section 4.2 reference 2D slice (categorical phase colors) ->
     a real cutaway cube rendered from that same real reference volume.
-    Equal box widths so the arrow sits exactly on the schematic's
-    horizontal middle, with identical spacing on both sides."""
-    (sx0, sy0, sw, sh), (cx0, cy0, cw, ch) = schem_layout_row(ax, [0.32, 0.32])
-    ax_slice = ax.inset_axes([sx0, sy0, sw, sh])
+    Box widths are aspect-correct (aspect_correct_width) so the real
+    rendered image -- not just the nominal inset rectangle -- fills each
+    box exactly, with SCHEM_BOX_H as the shared target height; the whole
+    [2D slice]-[arrow]-[3D volume] span (built from these real widths) is
+    centered at the schematic's true horizontal middle (0.5), matching
+    the same visible-composition-centering style used by Multiscale,
+    Multiphase, Topology, and Large volume. The actual visible bounds are
+    then measured (not assumed) and logged/asserted below."""
+    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
+    left_w = aspect_correct_width(ax, slice_img, SCHEM_BOX_H)
+    right_w = aspect_correct_width(ax, cube_img, SCHEM_BOX_H)
+    gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
+    total_extent = left_w + gap_zone + right_w
+    left_edge = 0.5 - total_extent / 2.0
+
+    sx0 = left_edge
+    arrow_x0 = sx0 + left_w + SCHEM_GAP
+    arrow_x1 = arrow_x0 + SCHEM_ARROW_LEN
+    cx0 = arrow_x1 + SCHEM_GAP  # right_edge == cx0 + right_w, by construction
+
+    ax_slice = ax.inset_axes([sx0, y0, left_w, SCHEM_BOX_H])
     ax_slice.imshow(slice_img, cmap=phase_cmap, vmin=0, vmax=2, interpolation="nearest")
     image_cell(ax_slice, SUBTEXT, lw=1.0)
-    ax_cube = ax.inset_axes([cx0, cy0, cw, ch])
+    draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
+    ax_cube = ax.inset_axes([cx0, y0, right_w, SCHEM_BOX_H])
     ax_cube.imshow(cube_img, interpolation="bilinear")
     image_cell(ax_cube, SUBTEXT, lw=1.0)
-    helper_label(ax, sx0 + sw / 2.0, "2D slice")
-    helper_label(ax, cx0 + cw / 2.0, "3D volume")
+    helper_label(ax, sx0 + left_w / 2.0, "2D slice")
+    helper_label(ax, cx0 + right_w / 2.0, "3D volume")
+
+    bounds = visible_local_bounds(ax, [("left", ax_slice), ("right", ax_cube)])
+    lv0, lv1 = bounds["left"]
+    rv0, rv1 = bounds["right"]
+    left_gap = arrow_x0 - lv1
+    right_gap = rv0 - arrow_x1
+    log(f"[schem:2d_to_3d] visible_left_bbox=({lv0:.4f},{lv1:.4f}) "
+        f"arrow_bbox=({arrow_x0:.4f},{arrow_x1:.4f}) "
+        f"visible_right_bbox=({rv0:.4f},{rv1:.4f}) "
+        f"left_gap={left_gap:.4f} right_gap={right_gap:.4f}")
+    if abs(left_gap - right_gap) > VISIBLE_GAP_TOL:
+        raise RuntimeError(
+            f"[schem:2d_to_3d] visible gap asymmetry exceeds tolerance "
+            f"({VISIBLE_GAP_TOL}): left={left_gap:.4f} right={right_gap:.4f}")
 
 
 def schem_super_resolution(ax, lr_crop, hr_crop):
@@ -823,16 +855,47 @@ def schem_super_resolution(ax, lr_crop, hr_crop):
     whatever LR crop is lr[y0:y1, x0:x1] -- never independently cropped).
     The LR crop is shown nearest-upsampled to the same display size as the
     native-resolution HR crop, with no artificial blur -- the real
-    resolution gap alone makes the LR crop visibly blockier."""
-    (lx0, ly0, lw, lh), (hx0, hy0, hw, hh) = schem_layout_row(ax, [0.34, 0.34])
-    ax_lr = ax.inset_axes([lx0, ly0, lw, lh])
+    resolution gap alone makes the LR crop visibly blockier. Box widths
+    are aspect-correct (aspect_correct_width) so the real rendered image
+    -- not just the nominal inset rectangle -- fills each box exactly,
+    matching the same visible-composition-centering style used by
+    Multiscale, Multiphase, Topology, and Large volume. The actual visible
+    bounds are then measured (not assumed) and logged/asserted below."""
+    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
+    left_w = aspect_correct_width(ax, lr_crop, SCHEM_BOX_H)
+    right_w = aspect_correct_width(ax, hr_crop, SCHEM_BOX_H)
+    gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
+    total_extent = left_w + gap_zone + right_w
+    left_edge = 0.5 - total_extent / 2.0
+
+    lx0 = left_edge
+    arrow_x0 = lx0 + left_w + SCHEM_GAP
+    arrow_x1 = arrow_x0 + SCHEM_ARROW_LEN
+    hx0 = arrow_x1 + SCHEM_GAP  # right_edge == hx0 + right_w, by construction
+
+    ax_lr = ax.inset_axes([lx0, y0, left_w, SCHEM_BOX_H])
     ax_lr.imshow(lr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     image_cell(ax_lr, SUBTEXT, lw=1.1)
-    ax_hr = ax.inset_axes([hx0, hy0, hw, hh])
+    draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
+    ax_hr = ax.inset_axes([hx0, y0, right_w, SCHEM_BOX_H])
     ax_hr.imshow(hr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     image_cell(ax_hr, SUBTEXT, lw=1.1)
-    helper_label(ax, lx0 + lw / 2.0, "LR")
-    helper_label(ax, hx0 + hw / 2.0, "HR")
+    helper_label(ax, lx0 + left_w / 2.0, "LR")
+    helper_label(ax, hx0 + right_w / 2.0, "HR")
+
+    bounds = visible_local_bounds(ax, [("left", ax_lr), ("right", ax_hr)])
+    lv0, lv1 = bounds["left"]
+    rv0, rv1 = bounds["right"]
+    left_gap = arrow_x0 - lv1
+    right_gap = rv0 - arrow_x1
+    log(f"[schem:super_resolution] visible_left_bbox=({lv0:.4f},{lv1:.4f}) "
+        f"arrow_bbox=({arrow_x0:.4f},{arrow_x1:.4f}) "
+        f"visible_right_bbox=({rv0:.4f},{rv1:.4f}) "
+        f"left_gap={left_gap:.4f} right_gap={right_gap:.4f}")
+    if abs(left_gap - right_gap) > VISIBLE_GAP_TOL:
+        raise RuntimeError(
+            f"[schem:super_resolution] visible gap asymmetry exceeds "
+            f"tolerance ({VISIBLE_GAP_TOL}): left={left_gap:.4f} right={right_gap:.4f}")
 
 
 def schem_anisotropy(ax, xy_slice, xz_slice, yz_slice, structure_color):
