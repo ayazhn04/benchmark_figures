@@ -77,6 +77,7 @@ matplotlib.use("Agg")
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, FancyArrowPatch
+from matplotlib.lines import Line2D
 from matplotlib.colors import ListedColormap, to_rgb
 from PIL import Image
 
@@ -172,9 +173,15 @@ DIFFUSION = "#F2A93B"
 GAN = "#772A8E"
 
 CARD_LW = 0.9
-HUB_LW = 1.3
+HUB_LW = 1.4
 CELL_LW = 1.8
-CONNECTOR_COLOR = "#A79BC0"
+CONNECTOR_COLOR = "#9483B0"
+
+# Restrained gray for the small in-schematic helper labels ("small FOV",
+# "LR"/"HR", "phase 1", ...) -- support text, never competing with the
+# task title or the model-name labels.
+HELPER_GRAY = "#948C9E"
+HELPER_FONTSIZE = 5.6
 
 FIG_W, FIG_H = 17.8, 10.2
 
@@ -185,16 +192,27 @@ FIG_W, FIG_H = 17.8, 10.2
 MARGIN = 0.03
 GAP = 0.022
 
-ROW_H = 0.40
+# Deliberate breathing room between the hub and each task row (both the
+# hub<->top-row gap and the hub<->bottom-row gap), so the hub reads as
+# clearly central rather than squeezed between the rows. The connector
+# "bus" lines (see draw_hub_tree) are routed through the middle of this
+# gap.
+HUB_GAP = 0.052
+
+HUB_W, HUB_H = 0.168, 0.100
+FULL_W = 1.0 - 2 * MARGIN
+
+# ROW_H is derived so the full vertical budget (margin + row + hub-gap +
+# hub + hub-gap + row + margin) exactly fills the page -- increasing
+# HUB_GAP automatically (and only) shrinks the task rows, never overlaps.
+ROW_H = (1.0 - 2 * MARGIN - 2 * HUB_GAP - HUB_H) / 2.0
+
 BOTTOM_Y0 = MARGIN
 TOP_Y0 = 1.0 - MARGIN - ROW_H
 
-HUB_W, HUB_H = 0.168, 0.095
 HUB_X0 = 0.5 - HUB_W / 2.0
 HUB_Y0 = 0.5 - HUB_H / 2.0
 HUB_CARD = [HUB_X0, HUB_Y0, HUB_W, HUB_H]
-
-FULL_W = 1.0 - 2 * MARGIN
 
 # Every one of the seven task panels shares one identical card width and
 # height -- sized off the tighter bottom row (4 cards) so the 3-card top
@@ -204,6 +222,11 @@ FULL_W = 1.0 - 2 * MARGIN
 N_BOTTOM = len(BOTTOM_ROW)
 CARD_W = (FULL_W - (N_BOTTOM - 1) * GAP) / N_BOTTOM
 CARD_H = ROW_H
+
+# Inner horizontal padding shared identically by the schematic row and the
+# render-cell row of every panel, so left/right whitespace reads as one
+# consistent rhythm rather than two slightly different insets.
+PANEL_INNER_PAD = 0.065
 
 
 def _centered_row_cards(y0, keys):
@@ -221,8 +244,10 @@ TOP_CARDS = dict(zip(TOP_ROW, _centered_row_cards(TOP_Y0, TOP_ROW)))
 BOTTOM_CARDS = dict(zip(BOTTOM_ROW, _centered_row_cards(BOTTOM_Y0, BOTTOM_ROW)))
 TASK_CARDS = {**TOP_CARDS, **BOTTOM_CARDS}
 
-assert HUB_Y0 >= BOTTOM_Y0 + ROW_H - 1e-9, "hub card overlaps the bottom task row"
-assert HUB_Y0 + HUB_H <= TOP_Y0 + 1e-9, "hub card overlaps the top task row"
+assert abs(HUB_Y0 - (BOTTOM_Y0 + ROW_H + HUB_GAP)) < 1e-9, \
+    "hub<->bottom-row gap does not match HUB_GAP"
+assert abs((HUB_Y0 + HUB_H) - (TOP_Y0 - HUB_GAP)) < 1e-9, \
+    "hub<->top-row gap does not match HUB_GAP"
 
 # Internal top-to-bottom slot ordering inside each task card (Requirement 2):
 # the top row reads renders -> schematic -> title (title nearest the hub,
@@ -230,14 +255,6 @@ assert HUB_Y0 + HUB_H <= TOP_Y0 + 1e-9, "hub card overlaps the top task row"
 # renders (title nearest the hub, which sits above the bottom row).
 ORDER_TOP = ["renders", "schematic", "title"]
 ORDER_BOTTOM = ["title", "schematic", "renders"]
-
-# Gentle arc radii ("arc3,rad=...") for each task's hub connector, fanned
-# out symmetrically per row so the seven curved connectors never tangle
-# near the hub (Requirement 6).
-CONNECTOR_RAD = {
-    "multiscale": -0.16, "2d_to_3d": 0.0, "super_resolution": 0.16,
-    "anisotropy": -0.22, "multiphase": -0.075, "topology": 0.075, "large_volume": 0.22,
-}
 
 # ============================================================================
 # 4. GENERIC HELPERS
@@ -437,6 +454,9 @@ def image_cell(ax, color, lw=CELL_LW):
 
 
 def schematic_axis(fig, xywh):
+    """The dashed challenge-schematic box -- deliberately light/thin so it
+    reads as secondary support for the title next to it, never competing
+    with the model-render area for visual weight."""
     ax = fig.add_axes(xywh)
     ax.set_facecolor("none")
     ax.set_xlim(0, 1)
@@ -444,28 +464,58 @@ def schematic_axis(fig, xywh):
     ax.set_xticks([])
     ax.set_yticks([])
     for sp in ax.spines.values():
-        sp.set_linestyle((0, (4, 3)))
-        sp.set_linewidth(1.0)
+        sp.set_linestyle((0, (5, 4)))
+        sp.set_linewidth(0.7)
         sp.set_color(SPINE)
     return ax
 
 
-def draw_connector(fig, x0, y0, x1, y1, rad=0.0):
-    """Gently curved hub<->task connector (a circular arc, not a bent
-    polyline) so the seven connectors fan out cleanly around the hub
-    instead of converging as overlapping straight lines (Requirement 6)."""
+def helper_label(ax, x, y, text, ha="center", va="center"):
+    """A small, restrained gray in-schematic caption ("small FOV", "LR",
+    "phase 1", ...) -- support text only, drawn in axes-fraction
+    coordinates of the schematic axis it annotates."""
+    ax.text(x, y, text, ha=ha, va=va, fontsize=HELPER_FONTSIZE, color=HELPER_GRAY,
+            fontstyle="italic", transform=ax.transAxes)
+
+
+CONNECTOR_ZORDER = -40  # above the white cards (-50) so nothing is clipped/hidden
+
+
+def _connector_line(fig, points):
+    """Plain polyline segment (no arrowhead) -- the shared trunk/bus part
+    of a routed hub<->row connector tree."""
+    xs, ys = zip(*points)
+    fig.add_artist(Line2D(
+        xs, ys, transform=fig.transFigure, color=CONNECTOR_COLOR,
+        linewidth=1.2, alpha=0.9, solid_capstyle="round", zorder=CONNECTOR_ZORDER,
+    ))
+
+
+def _connector_drop(fig, x, y0, y1):
+    """The final leg of a routed connector: a short straight drop from the
+    shared bus line into the panel's title-side edge, arrowhead landing
+    exactly on that edge."""
     arrow = FancyArrowPatch(
-        (x0, y0), (x1, y1), transform=fig.transFigure,
-        arrowstyle="-|>", mutation_scale=8, shrinkA=0, shrinkB=0,
-        linewidth=1.15, color=CONNECTOR_COLOR, alpha=0.85, zorder=-60,
-        connectionstyle=f"arc3,rad={rad}",
+        (x, y0), (x, y1), transform=fig.transFigure,
+        arrowstyle="-|>", mutation_scale=7.5, shrinkA=0, shrinkB=0.5,
+        linewidth=1.2, color=CONNECTOR_COLOR, alpha=0.9, zorder=CONNECTOR_ZORDER,
     )
     fig.add_artist(arrow)
 
 
-def draw_double_arrow(ax, x0, y0, x1, y1, color=SUBTEXT, lw=1.1):
-    ax.annotate("", xy=(x1, y1), xytext=(x0, y0),
-                arrowprops=dict(arrowstyle="<->", color=color, linewidth=lw, shrinkA=0, shrinkB=0))
+def draw_hub_tree(fig, hub_cx, hub_edge_y, bus_y, panel_cxs, panel_edge_ys):
+    """One consistent elbow-routed connector tree per row: a single trunk
+    from the hub edge to a shared horizontal bus, then one short vertical
+    drop (with arrowhead) from that bus into each panel's title-side edge.
+    Replaces N separate spokes/arcs converging on the hub -- here only one
+    line ever touches the hub on each side, so there is no clutter at the
+    center, no ambiguity about routing, and every drop is a plain straight
+    segment terminating cleanly on the panel border (Requirement: clean,
+    consistent, elegantly routed connectors)."""
+    _connector_line(fig, [(hub_cx, hub_edge_y), (hub_cx, bus_y)])
+    _connector_line(fig, [(min(panel_cxs), bus_y), (max(panel_cxs), bus_y)])
+    for cx, edge_y in zip(panel_cxs, panel_edge_ys):
+        _connector_drop(fig, cx, bus_y, edge_y)
 
 
 def draw_single_arrow(ax, x0, y0, x1, y1, color=SUBTEXT, lw=1.1):
@@ -522,95 +572,142 @@ def phase_mask_rgba(slice2d, phase_id, color_hex, bg_alpha=0.12):
 def schem_multiscale(ax, large_img, small_img, crop_box_px):
     """Real Section 4.1 reference slice: a larger context crop with the
     exact sub-window highlighted, zoomed at right -- both real voxels of
-    the already-loaded real representative volume (prepare_multiscale)."""
-    ax_large = ax.inset_axes([0.04, 0.08, 0.46, 0.84])
+    the already-loaded real representative volume (prepare_multiscale).
+    The small window is a deliberately small fraction of the large one so
+    the field-of-view contrast reads immediately."""
+    ax_large = ax.inset_axes([0.03, 0.16, 0.44, 0.72])
     ax_large.imshow(large_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     cx0, cy0, cw, ch = crop_box_px
-    ax_large.add_patch(Rectangle((cx0, cy0), cw, ch, fill=False, edgecolor=DIFFUSION, linewidth=1.4))
-    image_cell(ax_large, SUBTEXT, lw=1.1)
-    draw_single_arrow(ax, 0.52, 0.5, 0.61, 0.5, color=SUBTEXT)
-    ax_small = ax.inset_axes([0.63, 0.16, 0.33, 0.68])
+    ax_large.add_patch(Rectangle((cx0, cy0), cw, ch, fill=False, edgecolor=DIFFUSION, linewidth=1.5))
+    image_cell(ax_large, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.25, 0.08, "larger context")
+    draw_single_arrow(ax, 0.49, 0.52, 0.58, 0.52, color=SUBTEXT)
+    ax_small = ax.inset_axes([0.62, 0.22, 0.34, 0.62])
     ax_small.imshow(small_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
-    image_cell(ax_small, DIFFUSION, lw=1.3)
+    image_cell(ax_small, DIFFUSION, lw=1.2)
+    helper_label(ax, 0.79, 0.08, "small FOV")
 
 
 def schem_2d_to_3d(ax, slice_img, phase_cmap, cube_img):
     """A real Section 4.2 reference 2D slice (categorical phase colors) ->
     a real cutaway cube rendered from that same real reference volume."""
-    ax_slice = ax.inset_axes([0.03, 0.12, 0.34, 0.76])
+    ax_slice = ax.inset_axes([0.03, 0.20, 0.32, 0.66])
     ax_slice.imshow(slice_img, cmap=phase_cmap, vmin=0, vmax=2, interpolation="nearest")
-    image_cell(ax_slice, SUBTEXT, lw=1.1)
-    draw_single_arrow(ax, 0.40, 0.5, 0.52, 0.5, color=SUBTEXT)
-    ax_cube = ax.inset_axes([0.54, 0.04, 0.44, 0.92])
+    image_cell(ax_slice, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.19, 0.08, "2D slice")
+    draw_single_arrow(ax, 0.38, 0.52, 0.49, 0.52, color=SUBTEXT)
+    ax_cube = ax.inset_axes([0.52, 0.10, 0.44, 0.80])
     ax_cube.imshow(cube_img, interpolation="bilinear")
-    image_cell(ax_cube, SUBTEXT, lw=1.1)
+    image_cell(ax_cube, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.74, 0.02, "3D volume")
 
 
 def schem_super_resolution(ax, lr_crop, hr_crop):
     """LR crop -> HR crop, both real deterministic windows of the
-    already-loaded Section 4.3 representative pair (see prepare_super_resolution)."""
-    ax_lr = ax.inset_axes([0.03, 0.05, 0.42, 0.90])
+    already-loaded Section 4.3 representative pair (see
+    prepare_super_resolution). The LR window uses a much smaller real
+    pixel count, nearest-upsampled for display, so the block pixelation is
+    immediately obvious next to the crisp real HR crop."""
+    ax_lr = ax.inset_axes([0.03, 0.12, 0.42, 0.76])
     ax_lr.imshow(lr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
-    image_cell(ax_lr, SUBTEXT, lw=1.2)
+    image_cell(ax_lr, SUBTEXT, lw=1.1)
+    helper_label(ax, 0.24, 0.03, "LR")
     draw_single_arrow(ax, 0.47, 0.5, 0.55, 0.5, color=SUBTEXT)
-    ax_hr = ax.inset_axes([0.57, 0.05, 0.42, 0.90])
+    ax_hr = ax.inset_axes([0.57, 0.12, 0.42, 0.76])
     ax_hr.imshow(hr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
-    image_cell(ax_hr, SUBTEXT, lw=1.2)
+    image_cell(ax_hr, SUBTEXT, lw=1.1)
+    helper_label(ax, 0.78, 0.03, "HR")
 
 
-def schem_anisotropy(ax, slice_img, structure_color):
-    """A real Section 4.4 reference cross-section (binary pore/solid),
-    with directional length-scale cues overlaid -- not a generic ellipse."""
+def schem_anisotropy(ax, slice_img, structure_color, persistence):
+    """A real Section 4.4 reference cross-section (binary pore/solid) next
+    to the REAL per-axis structural-persistence profile -- one bar per
+    axis, length = 1/transition-rate for that exact representative sample,
+    reusing the section's own locked `transition_rates` descriptor (the
+    same quantity its `check_transitions` sanity check validates against
+    the official CSV). The longest bar is the axis with the fewest phase
+    transitions, i.e. the most persistent/elongated direction -- a
+    genuinely data-grounded anisotropy cue, not a generic ellipse."""
     cmap = ListedColormap(["#FFFFFF", structure_color])
-    ax_img = ax.inset_axes([0.15, 0.08, 0.70, 0.84])
+    ax_img = ax.inset_axes([0.02, 0.14, 0.40, 0.74])
     ax_img.imshow(slice_img, cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
-    image_cell(ax_img, SUBTEXT, lw=1.2)
-    draw_double_arrow(ax, 0.15, 0.045, 0.85, 0.045, color=SUBTEXT)
-    draw_double_arrow(ax, 0.955, 0.30, 0.955, 0.62, color=SUBTEXT)
+    image_cell(ax_img, SUBTEXT, lw=1.1)
+    helper_label(ax, 0.22, 0.04, "reference slice")
+
+    axes_names = ["x", "y", "z"]
+    vals = [persistence[a] for a in axes_names]
+    max_v = max(vals) if max(vals) > 0 else 1.0
+    long_axis = axes_names[int(np.argmax(vals))]
+    bar_x0, bar_w_max, bar_h = 0.53, 0.40, 0.13
+    ys = [0.72, 0.50, 0.28]
+    for name, v, y in zip(axes_names, vals, ys):
+        w = max(0.03, bar_w_max * (v / max_v))
+        color = DIFFUSION if name == long_axis else SUBTEXT
+        ax.add_patch(Rectangle((bar_x0, y), w, bar_h, facecolor=color, edgecolor="none", alpha=0.9))
+        ax.text(bar_x0 - 0.025, y + bar_h / 2, name, ha="right", va="center",
+                fontsize=6.6, color=SUBTEXT, fontweight="bold")
+    helper_label(ax, bar_x0 + bar_w_max / 2, 0.94, "directional persistence")
+    helper_label(ax, bar_x0 + bar_w_max / 2, 0.06, "longer = preferred orientation")
 
 
 def schem_multiphase(ax, phase_imgs, combined_img):
     """Three real phase-isolated crops of the reference volume's own slice
-    (pore/active/CBD, Figure 4.5's own categorical colors) combining into
-    the real 3D multiphase reference render -- not flat colored squares."""
-    xs = [0.02, 0.175, 0.33]
-    w_each = 0.135
+    (pore/active/CBD, Figure 4.5's own categorical colors), evenly spaced
+    and vertically aligned, combining into the real 3D multiphase
+    reference render at right -- not flat colored squares."""
+    xs = [0.02, 0.155, 0.29]
+    w_each = 0.115
+    panel_y, panel_h = 0.42, 0.42
     for i, k in enumerate((0, 1, 2)):
-        axp = ax.inset_axes([xs[i], 0.28, w_each, 0.58])
+        axp = ax.inset_axes([xs[i], panel_y, w_each, panel_h])
         axp.imshow(phase_imgs[k], interpolation="nearest")
-        image_cell(axp, SUBTEXT, lw=0.9)
+        image_cell(axp, SUBTEXT, lw=0.8)
+        helper_label(ax, xs[i] + w_each / 2, panel_y - 0.08, f"phase {k + 1}")
         if i < 2:
-            ax.text(xs[i] + w_each + 0.010, 0.57, "+", ha="center", va="center",
-                    fontsize=12, fontweight="bold", color=SUBTEXT, transform=ax.transAxes)
-    draw_single_arrow(ax, 0.55, 0.55, 0.65, 0.55, color=SUBTEXT)
-    ax_c = ax.inset_axes([0.67, 0.06, 0.31, 0.88])
+            ax.text(xs[i] + w_each + 0.012, panel_y + panel_h / 2, "+", ha="center", va="center",
+                    fontsize=11, fontweight="bold", color=SUBTEXT, transform=ax.transAxes)
+    draw_single_arrow(ax, 0.445, panel_y + panel_h / 2, 0.53, panel_y + panel_h / 2, color=SUBTEXT)
+    ax_c = ax.inset_axes([0.565, 0.14, 0.42, 0.78])
     ax_c.imshow(combined_img, interpolation="bilinear")
-    image_cell(ax_c, SUBTEXT, lw=1.1)
+    image_cell(ax_c, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.775, 0.03, "combined")
 
 
 def schem_topology(ax, fragments_img, full_img):
     """The real reference sample's own connected-component labeling, split
     into its disconnected fragments (largest component removed) at left vs.
-    its full spanning network at right -- both from the same real sample."""
-    ax_frag = ax.inset_axes([0.02, 0.06, 0.44, 0.88])
+    its full spanning network at right -- both from the same real sample,
+    labeled so the fragmented/connected contrast reads immediately."""
+    ax_frag = ax.inset_axes([0.02, 0.14, 0.44, 0.72])
     ax_frag.imshow(fragments_img, interpolation="bilinear")
-    image_cell(ax_frag, SUBTEXT, lw=1.1)
-    draw_single_arrow(ax, 0.48, 0.5, 0.56, 0.5, color=SUBTEXT)
-    ax_full = ax.inset_axes([0.58, 0.06, 0.44, 0.88])
+    image_cell(ax_frag, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.24, 0.03, "disconnected")
+    draw_single_arrow(ax, 0.48, 0.52, 0.56, 0.52, color=SUBTEXT)
+    ax_full = ax.inset_axes([0.58, 0.14, 0.44, 0.72])
     ax_full.imshow(full_img, interpolation="bilinear")
-    image_cell(ax_full, SUBTEXT, lw=1.1)
+    image_cell(ax_full, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.80, 0.03, "connected")
 
 
 def schem_large_volume(ax, small_img, large_img):
     """A small real crop of the reference 512^3 volume -> the full real
-    reference volume rendered the same way -- not empty wireframe cubes."""
-    ax_small = ax.inset_axes([0.02, 0.26, 0.30, 0.52])
+    reference volume rendered the same way, with a corner bracket on the
+    large render marking where the small subvolume sits within it -- the
+    same orange "here's the small region" convention as the Multiscale
+    schematic, so the small-in-large correspondence is explicit rather
+    than two disconnected renders."""
+    ax_small = ax.inset_axes([0.02, 0.24, 0.28, 0.56])
     ax_small.imshow(small_img, interpolation="bilinear")
-    image_cell(ax_small, SUBTEXT, lw=1.1)
-    draw_single_arrow(ax, 0.35, 0.5, 0.47, 0.5, color=SUBTEXT)
-    ax_large = ax.inset_axes([0.49, 0.04, 0.49, 0.92])
+    image_cell(ax_small, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.16, 0.10, "small subvolume")
+    draw_single_arrow(ax, 0.32, 0.5, 0.41, 0.5, color=SUBTEXT)
+    ax_large = ax.inset_axes([0.44, 0.08, 0.54, 0.84])
     ax_large.imshow(large_img, interpolation="bilinear")
-    image_cell(ax_large, SUBTEXT, lw=1.1)
+    bx0, by0, bw, bh = 0.04, 0.04, 0.30, 0.30
+    ax_large.plot([bx0, bx0, bx0 + bw], [by0 + bh, by0, by0], color=DIFFUSION,
+                  linewidth=1.7, transform=ax_large.transAxes, solid_capstyle="round")
+    image_cell(ax_large, SUBTEXT, lw=1.0)
+    helper_label(ax, 0.71, 0.02, "large domain")
 
 
 # ============================================================================
@@ -659,7 +756,7 @@ def prepare_multiscale(m1):
     # call -- this never touches the diffusion/gan crop union above).
     real_vol = rep["real"]["vol"]
     large_img = binary_slice_u8(real_vol)
-    r0, c0, ch, cw = center_crop_box(*large_img.shape, frac=0.30)
+    r0, c0, ch, cw = center_crop_box(*large_img.shape, frac=0.14)
     small_img = large_img[r0:r0 + ch, c0:c0 + cw]
     crop_box_px = (c0, r0, cw, ch)
 
@@ -675,7 +772,7 @@ def prepare_multiscale(m1):
                              "(PyVista marching-cubes pore isosurface, solid model color)",
         "schematic_fn": lambda ax: schem_multiscale(ax, large_img, small_img, crop_box_px),
         "schematic_source": f"real Section 4.1 reference representative mid-slice "
-                             f"({rep['real']['file']}), deterministic centered 30% crop window",
+                             f"({rep['real']['file']}), deterministic centered 14% crop window",
     }
 
 
@@ -760,10 +857,12 @@ def prepare_super_resolution(m3):
 
     # Deterministic, fixed-size, top-left crops of the same real representative
     # pair -- never manually chosen -- for the fully grounded LR->HR schematic.
-    # Sized at the dataset's own real 4x downsampling ratio (200x200 LR ->
-    # 800x800 HR) so the crop is larger/more informative than a tiny thumbnail.
+    # The LR crop uses a much smaller real pixel count (25x25) than the HR
+    # crop (200x200), both nearest-upsampled/displayed at the same 200x200
+    # canvas size, so the real LR blockiness/pixelation is unmistakable next
+    # to the crisp real HR detail (an 8x block size, vs. the previous 4x).
     hr_crop = hr_full[0:200, 0:200]
-    lr_crop_small = lr_full[0:50, 0:50]
+    lr_crop_small = lr_full[0:25, 0:25]
     lr_crop = np.array(Image.fromarray(lr_crop_small).resize((200, 200), Image.NEAREST))
 
     return {
@@ -778,7 +877,7 @@ def prepare_super_resolution(m3):
                              "of the locked representative ResShift/SurVol outputs -- no 3D render",
         "schematic_fn": lambda ax: schem_super_resolution(ax, lr_crop, hr_crop),
         "schematic_source": f"real Section 4.3 representative crop (hr={hr_files[rep_idx]}, "
-                             f"lr={lr_files[rep_idx]}, top-left 200x200/50x50 deterministic window)",
+                             f"lr={lr_files[rep_idx]}, top-left 200x200/25x25 deterministic window)",
     }
 
 
@@ -804,13 +903,21 @@ def prepare_anisotropy(m4):
     m4.finalize_renders(raw_paths, png_paths)
 
     # Grounded anisotropy schematic: a real reference cross-section (binary
-    # pore/solid) instead of a generic ellipse, in the section's own locked
-    # "real"/reference color.
+    # pore/solid) plus the REAL per-axis structural-persistence profile
+    # (1/transition-rate along x/y/z) for that exact representative sample
+    # -- the same tx/ty/tz descriptor the locked check_transitions sanity
+    # check already validates against the official CSV, reused here rather
+    # than approximated. This replaces the generic ellipse with a genuinely
+    # data-grounded directional cue.
     real_volumes = m4.load_group_volumes("real")
     real_rows = m4.compute_group_descriptors(real_volumes)
     real_file, _ = m4.choose_representative("real", real_rows)
     real_vol = real_volumes[real_file]
     slice_img = np.asarray(real_vol[real_vol.shape[0] // 2]).astype(bool).astype(np.uint8)
+    real_row = next(r for r in real_rows if r["file"] == real_file)
+    eps = 1e-9
+    persistence = {"x": 1.0 / (real_row["tx"] + eps), "y": 1.0 / (real_row["ty"] + eps),
+                   "z": 1.0 / (real_row["tz"] + eps)}
 
     return {
         "key": "anisotropy",
@@ -823,8 +930,9 @@ def prepare_anisotropy(m4):
         "render_mechanism": "make_fig4_4_composite_magma_final.render_group_isosurface "
                              "(PyVista marching-cubes phase-1 isosurface, solid model color, "
                              "raises loudly on failure -- no fallback)",
-        "schematic_fn": lambda ax: schem_anisotropy(ax, slice_img, m4.COLORS["real"]),
-        "schematic_source": f"real Section 4.4 reference representative mid-slice ({real_file})",
+        "schematic_fn": lambda ax: schem_anisotropy(ax, slice_img, m4.COLORS["real"], persistence),
+        "schematic_source": f"real Section 4.4 reference representative mid-slice and its own "
+                             f"tx/ty/tz transition-rate descriptor ({real_file})",
     }
 
 
@@ -1050,22 +1158,47 @@ PREPARE_FUNCS = {
 # ============================================================================
 
 
+SLOT_FRAC = {"title": 0.15, "schematic": 0.26, "renders": 0.59}
+
+# Two different inter-slot gaps, not one uniform gap: title and schematic
+# are always adjacent in `order` and sit close together (the title reads as
+# naming the schematic right next to it), while schematic and renders get
+# more separation (the dashed box stays visually secondary to the model
+# renders, which are the main scientific content of the panel).
+GAP_TITLE_SCHEM = 0.014
+GAP_SCHEM_RENDERS = 0.030
+
+# Renders-slot internal rhythm, expressed as fractions of the renders
+# slot's own height so it is pixel-identical on every one of the 7 panels
+# regardless of which neighbor (card edge, for the top row; the dashed box,
+# for the bottom row) sits above it -- fixing the previous "name too close
+# to the edge" (top row) / "name too close to the dashed box" (bottom row)
+# inconsistency with one shared rule.
+NAME_TOP_INSET = 0.11   # breathing room above the model-name text
+NAME_LINE_H = 0.15      # band reserved for the model-name text itself
+NAME_IMG_GAP = 0.06     # gap between the model name and its render
+
+
+def _slot_gap(key_a, key_b):
+    return GAP_TITLE_SCHEM if {key_a, key_b} == {"title", "schematic"} else GAP_SCHEM_RENDERS
+
+
 def _stack_slots(y0, h, order):
     """Top-to-bottom slot geometry inside a card spanning [y0, y0+h], per
     `order` (a top-to-bottom list of 'renders'/'schematic'/'title').
     Returns {slot_key: (slot_y0, slot_h)}, slot_y0 being each slot's
     bottom-left y (matplotlib's own convention for add_axes/Rectangle)."""
-    pad = 0.026 * h
-    gap = 0.020 * h
-    avail = h - 2 * pad - 2 * gap
-    frac = {"title": 0.16, "schematic": 0.34, "renders": 0.50}
+    pad = 0.030 * h
+    total_gap = _slot_gap(order[0], order[1]) + _slot_gap(order[1], order[2])
+    avail = h - 2 * pad - total_gap * h
     positions = {}
     cursor_top = y0 + h - pad
-    for key in order:
-        slot_h = frac[key] * avail
+    for i, key in enumerate(order):
+        slot_h = SLOT_FRAC[key] * avail
         slot_bottom = cursor_top - slot_h
         positions[key] = (slot_bottom, slot_h)
-        cursor_top = slot_bottom - gap
+        if i < len(order) - 1:
+            cursor_top = slot_bottom - _slot_gap(key, order[i + 1]) * h
     return positions
 
 
@@ -1090,22 +1223,21 @@ def build_task_card(fig, xywh, title, task, order):
     fig.text(x0 + w / 2.0, ty0 + th / 2.0, title, ha="center", va="center",
               fontsize=11.5, fontweight="bold", color=TEXT)
 
-    # ---- schematic slot ----------------------------------------------------
+    # ---- schematic slot: shrunk relative to renders, secondary in weight --
     sy0, sh = slots["schematic"]
-    schem_x0 = x0 + 0.06 * w
-    schem_w = w - 0.12 * w
+    schem_x0 = x0 + PANEL_INNER_PAD * w
+    schem_w = w - 2 * PANEL_INNER_PAD * w
     ax_schem = schematic_axis(fig, [schem_x0, sy0, schem_w, sh])
     task["schematic_fn"](ax_schem)
 
-    # ---- renders slot: label above image, image at the slot's bottom -----
+    # ---- renders slot: name sits a fixed inset below the slot's own top,
+    # then a fixed gap, then the render -- identical rhythm in both rows --
     ry0, rh = slots["renders"]
-    label_h = 0.22 * rh
-    lr_gap = 0.05 * rh
-    img_h = rh - label_h - lr_gap
+    img_h = rh * (1.0 - NAME_TOP_INSET - NAME_LINE_H - NAME_IMG_GAP)
     img_y0 = ry0
-    label_y0 = ry0 + img_h + lr_gap
+    name_top_y = ry0 + rh - NAME_TOP_INSET * rh
 
-    pad_x = 0.07 * w
+    pad_x = PANEL_INNER_PAD * w
     cell_gap = 0.05 * w
     cell_w = (w - 2 * pad_x - cell_gap) / 2.0
     left_x0 = x0 + pad_x
@@ -1113,7 +1245,7 @@ def build_task_card(fig, xywh, title, task, order):
 
     for cell_x0, side in ((left_x0, "diffusion"), (right_x0, "gan")):
         info = task[side]
-        fig.text(cell_x0 + cell_w / 2.0, label_y0 + label_h, info["label"],
+        fig.text(cell_x0 + cell_w / 2.0, name_top_y, info["label"],
                   ha="center", va="top", fontsize=8.4, fontweight="bold", color=info["color"])
         ax = fig.add_axes([cell_x0, img_y0, cell_w, img_h])
         if info["cmap"] is not None:
@@ -1194,14 +1326,19 @@ def main():
     fig.patch.set_facecolor(BG)
 
     hub_cx, hub_cy = HUB_X0 + HUB_W / 2.0, HUB_Y0 + HUB_H / 2.0
-    for key in TOP_ROW:
-        cx, cy, cw, ch = TASK_CARDS[key]
-        draw_connector(fig, hub_cx, hub_cy + HUB_H / 2.0, cx + cw / 2.0, cy,
-                        rad=CONNECTOR_RAD[key])
-    for key in BOTTOM_ROW:
-        cx, cy, cw, ch = TASK_CARDS[key]
-        draw_connector(fig, hub_cx, hub_cy - HUB_H / 2.0, cx + cw / 2.0, cy + ch,
-                        rad=CONNECTOR_RAD[key])
+
+    # One consistent elbow-routed connector tree per row (trunk -> bus ->
+    # per-panel drop), landing on each panel's title-side edge -- see
+    # draw_hub_tree for why this replaces the previous per-task arcs.
+    top_bus_y = (hub_cy + HUB_H / 2.0 + TOP_Y0) / 2.0
+    top_cxs = [TASK_CARDS[k][0] + TASK_CARDS[k][2] / 2.0 for k in TOP_ROW]
+    top_edge_ys = [TASK_CARDS[k][1] for k in TOP_ROW]
+    draw_hub_tree(fig, hub_cx, hub_cy + HUB_H / 2.0, top_bus_y, top_cxs, top_edge_ys)
+
+    bottom_bus_y = (hub_cy - HUB_H / 2.0 + (BOTTOM_Y0 + ROW_H)) / 2.0
+    bottom_cxs = [TASK_CARDS[k][0] + TASK_CARDS[k][2] / 2.0 for k in BOTTOM_ROW]
+    bottom_edge_ys = [TASK_CARDS[k][1] + TASK_CARDS[k][3] for k in BOTTOM_ROW]
+    draw_hub_tree(fig, hub_cx, hub_cy - HUB_H / 2.0, bottom_bus_y, bottom_cxs, bottom_edge_ys)
 
     for key in TOP_ROW:
         build_task_card(fig, TASK_CARDS[key], TASK_TITLES[key], tasks[key], ORDER_TOP)
