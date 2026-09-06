@@ -691,13 +691,15 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
     orange/GAN-purple."""
     (lx0, ly0, lw, lh), (sx0, sy0, sw, sh) = schem_layout_row(ax, [0.40, 0.28])
     ax_large = ax.inset_axes([lx0, ly0, lw, lh])
-    ax_large.imshow(large_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
+    ax_large.imshow(large_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest",
+                     aspect="auto")
     cx0, cy0, cw, ch = crop_box_px
     ax_large.add_patch(Rectangle((cx0, cy0), cw, ch, fill=False, edgecolor=ANNOTATION_COLOR,
                                   linewidth=1.5))
     image_cell(ax_large, SUBTEXT, lw=1.0)
     ax_small = ax.inset_axes([sx0, sy0, sw, sh])
-    ax_small.imshow(small_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
+    ax_small.imshow(small_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest",
+                     aspect="auto")
     image_cell(ax_small, ANNOTATION_COLOR, lw=1.2)
     helper_label(ax, lx0 + lw / 2.0, "larger context")
     helper_label(ax, sx0 + sw / 2.0, "small FOV")
@@ -710,10 +712,11 @@ def schem_2d_to_3d(ax, slice_img, phase_cmap, cube_img):
     horizontal middle, with identical spacing on both sides."""
     (sx0, sy0, sw, sh), (cx0, cy0, cw, ch) = schem_layout_row(ax, [0.32, 0.32])
     ax_slice = ax.inset_axes([sx0, sy0, sw, sh])
-    ax_slice.imshow(slice_img, cmap=phase_cmap, vmin=0, vmax=2, interpolation="nearest")
+    ax_slice.imshow(slice_img, cmap=phase_cmap, vmin=0, vmax=2, interpolation="nearest",
+                     aspect="auto")
     image_cell(ax_slice, SUBTEXT, lw=1.0)
     ax_cube = ax.inset_axes([cx0, cy0, cw, ch])
-    ax_cube.imshow(cube_img, interpolation="bilinear")
+    ax_cube.imshow(cube_img, interpolation="bilinear", aspect="auto")
     image_cell(ax_cube, SUBTEXT, lw=1.0)
     helper_label(ax, sx0 + sw / 2.0, "2D slice")
     helper_label(ax, cx0 + cw / 2.0, "3D volume")
@@ -729,10 +732,10 @@ def schem_super_resolution(ax, lr_crop, hr_crop):
     resolution gap alone makes the LR crop visibly blockier."""
     (lx0, ly0, lw, lh), (hx0, hy0, hw, hh) = schem_layout_row(ax, [0.34, 0.34])
     ax_lr = ax.inset_axes([lx0, ly0, lw, lh])
-    ax_lr.imshow(lr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
+    ax_lr.imshow(lr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest", aspect="auto")
     image_cell(ax_lr, SUBTEXT, lw=1.1)
     ax_hr = ax.inset_axes([hx0, hy0, hw, hh])
-    ax_hr.imshow(hr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
+    ax_hr.imshow(hr_crop, cmap="gray", vmin=0, vmax=255, interpolation="nearest", aspect="auto")
     image_cell(ax_hr, SUBTEXT, lw=1.1)
     helper_label(ax, lx0 + lw / 2.0, "LR")
     helper_label(ax, hx0 + hw / 2.0, "HR")
@@ -756,7 +759,7 @@ def schem_anisotropy(ax, xy_slice, xz_slice, yz_slice, structure_color):
 
 
 PHASE_BOX_W = 0.125
-PHASE_PLUS_GAP = 0.05
+PHASE_PLUS_GAP = 0.07
 COMBINED_BOX_W = 0.20
 
 
@@ -779,7 +782,7 @@ def schem_multiphase(ax, phase_imgs, combined_img):
 
     for i, x in enumerate(xs):
         axp = ax.inset_axes([x, y0, PHASE_BOX_W, SCHEM_BOX_H])
-        axp.imshow(phase_imgs[i], interpolation="nearest")
+        axp.imshow(phase_imgs[i], interpolation="nearest", aspect="auto")
         image_cell(axp, SUBTEXT, lw=0.8)
         helper_label(ax, x + PHASE_BOX_W / 2.0, f"phase {i + 1}")
         if i < 2:
@@ -793,7 +796,7 @@ def schem_multiphase(ax, phase_imgs, combined_img):
 
     comb_x0 = arrow_x1 + SCHEM_GAP
     ax_c = ax.inset_axes([comb_x0, y0, COMBINED_BOX_W, SCHEM_BOX_H])
-    ax_c.imshow(combined_img, interpolation="bilinear")
+    ax_c.imshow(combined_img, interpolation="bilinear", aspect="auto")
     image_cell(ax_c, SUBTEXT, lw=1.0)
     helper_label(ax, comb_x0 + COMBINED_BOX_W / 2.0, "combined")
 
@@ -820,7 +823,7 @@ def schem_topology(ax, backbone_img, fragments_img, full_img):
     for x, img, lab in ((x_backbone, backbone_img, "connected backbone"),
                         (x_fragments, fragments_img, "fragments")):
         axb = ax.inset_axes([x, y0, TOPOLOGY_PART_W, SCHEM_BOX_H])
-        axb.imshow(img, interpolation="bilinear")
+        axb.imshow(img, interpolation="bilinear", aspect="auto")
         image_cell(axb, SUBTEXT, lw=0.9)
         helper_label(ax, x + TOPOLOGY_PART_W / 2.0, lab)
     plus_x = x_backbone + TOPOLOGY_PART_W + TOPOLOGY_PLUS_GAP / 2.0
@@ -833,7 +836,7 @@ def schem_topology(ax, backbone_img, fragments_img, full_img):
 
     full_x0 = arrow_x1 + SCHEM_GAP
     ax_full = ax.inset_axes([full_x0, y0, TOPOLOGY_FULL_W, SCHEM_BOX_H])
-    ax_full.imshow(full_img, interpolation="bilinear")
+    ax_full.imshow(full_img, interpolation="bilinear", aspect="auto")
     image_cell(ax_full, SUBTEXT, lw=1.0)
     helper_label(ax, full_x0 + TOPOLOGY_FULL_W / 2.0, "full network")
 
@@ -842,16 +845,18 @@ def schem_large_volume(ax, small_img, large_img):
     """A small real crop of the reference 512^3 volume -> the full real
     reference volume rendered the same way, with a clearly visible
     ANNOTATION_COLOR wireframe bounding box on the large render marking
-    exactly where the small subvolume originates -- so the small-in-large
-    correspondence is explicit rather than two disconnected renders. The
-    small box is narrow, closer in visual scale to the Multiphase
+    exactly where the small subvolume originates. The small subvolume's
+    own outline uses that SAME ANNOTATION_COLOR (matching Multiscale's
+    small-FOV/ROI-box convention exactly), so the two are visually tied
+    together as one correspondence rather than two disconnected renders.
+    The small box is narrow, closer in visual scale to the Multiphase
     schematic's isolated-phase cells, so it reads as genuinely "small"."""
     (sx0, sy0, sw, sh), (lx0, ly0, lw, lh) = schem_layout_row(ax, [0.17, 0.34])
     ax_small = ax.inset_axes([sx0, sy0, sw, sh])
-    ax_small.imshow(small_img, interpolation="bilinear")
-    image_cell(ax_small, SUBTEXT, lw=1.0)
+    ax_small.imshow(small_img, interpolation="bilinear", aspect="auto")
+    image_cell(ax_small, ANNOTATION_COLOR, lw=1.2)
     ax_large = ax.inset_axes([lx0, ly0, lw, lh])
-    ax_large.imshow(large_img, interpolation="bilinear")
+    ax_large.imshow(large_img, interpolation="bilinear", aspect="auto")
     bx0, by0, bw, bh = 0.04, 0.04, 0.30, 0.30
     ax_large.plot([bx0, bx0, bx0 + bw, bx0 + bw, bx0], [by0, by0 + bh, by0 + bh, by0, by0],
                   color=ANNOTATION_COLOR, linewidth=1.6, transform=ax_large.transAxes,
@@ -1360,7 +1365,7 @@ SCHEMATIC_MODEL_GAP = 0.030
 # gap feel identical in both rows without depending on row direction.
 MODEL_UNIT_EDGE_INSET = 0.11   # breathing room at each outer edge of the model unit
 MODEL_NAME_LINE_H = 0.15       # band reserved for the model-name text itself
-MODEL_NAME_RENDER_GAP = 0.012  # small fixed gap between the name and its render (tight)
+MODEL_NAME_RENDER_GAP = 0.006  # small fixed gap between the name and its render (very tight)
 
 
 def _slot_gap(key_a, key_b):
