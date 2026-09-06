@@ -688,22 +688,35 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
     -- both real voxels of the already-loaded real representative volume
     (see choose_grounded_roi in prepare_multiscale for the ROI criterion).
     The ROI marker uses the neutral ANNOTATION_COLOR, never diffusion-
-    orange/GAN-purple. Uses schem_layout_row (whole-group centering) so
-    the entire larger-context/small-FOV composition sits centered inside
-    the dashed box, with the left-object<->arrow and arrow<->right-object
-    gaps equal by construction."""
-    (lx0, ly0, lw, lh), (sx0, sy0, sw, sh) = schem_layout_row(ax, [0.40, 0.28])
-    ax_large = ax.inset_axes([lx0, ly0, lw, lh])
+    orange/GAN-purple. Positioning is computed explicitly here (not via
+    schem_layout_row) so the whole [larger context]-[arrow]-[small FOV]
+    span is centered directly on the schematic's true horizontal middle
+    (0.5): left_edge/right_edge bound the full composition, and that span
+    is centered at exactly x=0.5, with SCHEM_GAP symmetric on both sides
+    of the arrow. Object sizes are unchanged (0.40/0.28)."""
+    left_w, right_w = 0.40, 0.28
+    gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
+    total_extent = left_w + gap_zone + right_w
+    left_edge = 0.5 - total_extent / 2.0
+    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
+
+    lx0 = left_edge
+    arrow_x0 = lx0 + left_w + SCHEM_GAP
+    arrow_x1 = arrow_x0 + SCHEM_ARROW_LEN
+    sx0 = arrow_x1 + SCHEM_GAP  # right_edge == sx0 + right_w, by construction
+
+    ax_large = ax.inset_axes([lx0, y0, left_w, SCHEM_BOX_H])
     ax_large.imshow(large_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     cx0, cy0, cw, ch = crop_box_px
     ax_large.add_patch(Rectangle((cx0, cy0), cw, ch, fill=False, edgecolor=ANNOTATION_COLOR,
                                   linewidth=1.5))
     image_cell(ax_large, SUBTEXT, lw=1.0)
-    ax_small = ax.inset_axes([sx0, sy0, sw, sh])
+    draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
+    ax_small = ax.inset_axes([sx0, y0, right_w, SCHEM_BOX_H])
     ax_small.imshow(small_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     image_cell(ax_small, ANNOTATION_COLOR, lw=1.2)
-    helper_label(ax, lx0 + lw / 2.0, "larger context")
-    helper_label(ax, sx0 + sw / 2.0, "small FOV")
+    helper_label(ax, lx0 + left_w / 2.0, "larger context")
+    helper_label(ax, sx0 + right_w / 2.0, "small FOV")
 
 
 def schem_2d_to_3d(ax, slice_img, phase_cmap, cube_img):
@@ -768,17 +781,22 @@ def schem_multiphase(ax, phase_imgs, combined_img):
     crops of the reference volume's own slice (pore/active/CBD, Figure
     4.5's own categorical colors), equal size/spacing with breathing room
     around each '+', combining into the real 3D multiphase reference
-    render -- all vertically centered on the same SCHEM_VCENTER."""
+    render -- all vertically centered on the same SCHEM_VCENTER. The
+    arrow's position is computed explicitly from the two endpoints it
+    connects (phase3_right, combined_left), not inferred indirectly:
+    arrow_center = 0.5 * (phase3_right + combined_left)."""
     y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
     group_w = 3 * PHASE_BOX_W + 2 * PHASE_PLUS_GAP
-    total_w = group_w + 2 * SCHEM_GAP + SCHEM_ARROW_LEN + COMBINED_BOX_W
-    x0 = SCHEM_PAD + max(0.0, (1.0 - 2 * SCHEM_PAD - total_w) / 2.0)
+    gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
+    total_extent = group_w + gap_zone + COMBINED_BOX_W
+    left_edge = 0.5 - total_extent / 2.0
 
     xs = []
-    cursor = x0
+    cursor = left_edge
     for i in range(3):
         xs.append(cursor)
         cursor += PHASE_BOX_W + (PHASE_PLUS_GAP if i < 2 else 0.0)
+    phase3_right = xs[-1] + PHASE_BOX_W
 
     for i, x in enumerate(xs):
         axp = ax.inset_axes([x, y0, PHASE_BOX_W, SCHEM_BOX_H])
@@ -790,15 +808,19 @@ def schem_multiphase(ax, phase_imgs, combined_img):
             ax.text(plus_x, SCHEM_VCENTER, "+", ha="center", va="center", fontsize=13,
                     fontweight="bold", color=SUBTEXT, transform=ax.transAxes)
 
-    arrow_x0 = xs[-1] + PHASE_BOX_W + SCHEM_GAP
-    arrow_x1 = arrow_x0 + SCHEM_ARROW_LEN
+    combined_left = phase3_right + gap_zone
+
+    # Arrow centered explicitly in the visible gap between phase3_right
+    # and combined_left -- computed from those two endpoints directly.
+    arrow_center = 0.5 * (phase3_right + combined_left)
+    arrow_x0 = arrow_center - SCHEM_ARROW_LEN / 2.0
+    arrow_x1 = arrow_center + SCHEM_ARROW_LEN / 2.0
     draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
 
-    comb_x0 = arrow_x1 + SCHEM_GAP
-    ax_c = ax.inset_axes([comb_x0, y0, COMBINED_BOX_W, SCHEM_BOX_H])
+    ax_c = ax.inset_axes([combined_left, y0, COMBINED_BOX_W, SCHEM_BOX_H])
     ax_c.imshow(combined_img, interpolation="bilinear")
     image_cell(ax_c, SUBTEXT, lw=1.0)
-    helper_label(ax, comb_x0 + COMBINED_BOX_W / 2.0, "combined")
+    helper_label(ax, combined_left + COMBINED_BOX_W / 2.0, "combined")
 
 
 TOPOLOGY_PART_W = 0.19
@@ -812,14 +834,19 @@ def schem_topology(ax, backbone_img, fragments_img, full_img):
     component alone, disconnected fragments alone, and the two together)
     -- teaching what topology/connectivity means in this benchmark as a
     composition, not a "bad -> good" transformation. All three renders
-    come from the exact same real representative sample."""
+    come from the exact same real representative sample. The arrow's
+    position is computed explicitly from the two endpoints it connects
+    (fragments_right, full_left), not inferred indirectly:
+    arrow_center = 0.5 * (fragments_right + full_left)."""
     y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
     group_w = 2 * TOPOLOGY_PART_W + TOPOLOGY_PLUS_GAP
-    total_w = group_w + 2 * SCHEM_GAP + SCHEM_ARROW_LEN + TOPOLOGY_FULL_W
-    x0 = SCHEM_PAD + max(0.0, (1.0 - 2 * SCHEM_PAD - total_w) / 2.0)
+    gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
+    total_extent = group_w + gap_zone + TOPOLOGY_FULL_W
+    left_edge = 0.5 - total_extent / 2.0
 
-    x_backbone = x0
+    x_backbone = left_edge
     x_fragments = x_backbone + TOPOLOGY_PART_W + TOPOLOGY_PLUS_GAP
+    fragments_right = x_fragments + TOPOLOGY_PART_W
     for x, img, lab in ((x_backbone, backbone_img, "connected backbone"),
                         (x_fragments, fragments_img, "fragments")):
         axb = ax.inset_axes([x, y0, TOPOLOGY_PART_W, SCHEM_BOX_H])
@@ -830,15 +857,19 @@ def schem_topology(ax, backbone_img, fragments_img, full_img):
     ax.text(plus_x, SCHEM_VCENTER, "+", ha="center", va="center", fontsize=13,
             fontweight="bold", color=SUBTEXT, transform=ax.transAxes)
 
-    arrow_x0 = x_fragments + TOPOLOGY_PART_W + SCHEM_GAP
-    arrow_x1 = arrow_x0 + SCHEM_ARROW_LEN
+    full_left = fragments_right + gap_zone
+
+    # Arrow centered explicitly in the visible gap between fragments_right
+    # and full_left -- computed from those two endpoints directly.
+    arrow_center = 0.5 * (fragments_right + full_left)
+    arrow_x0 = arrow_center - SCHEM_ARROW_LEN / 2.0
+    arrow_x1 = arrow_center + SCHEM_ARROW_LEN / 2.0
     draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
 
-    full_x0 = arrow_x1 + SCHEM_GAP
-    ax_full = ax.inset_axes([full_x0, y0, TOPOLOGY_FULL_W, SCHEM_BOX_H])
+    ax_full = ax.inset_axes([full_left, y0, TOPOLOGY_FULL_W, SCHEM_BOX_H])
     ax_full.imshow(full_img, interpolation="bilinear")
     image_cell(ax_full, SUBTEXT, lw=1.0)
-    helper_label(ax, full_x0 + TOPOLOGY_FULL_W / 2.0, "full network")
+    helper_label(ax, full_left + TOPOLOGY_FULL_W / 2.0, "full network")
 
 
 def schem_large_volume(ax, small_img, large_img):
@@ -850,23 +881,36 @@ def schem_large_volume(ax, small_img, large_img):
     tied together as one explicit correspondence rather than two
     disconnected renders. The small box is narrow, closer in visual scale
     to the Multiphase schematic's isolated-phase cells, so it reads as
-    genuinely "small". Uses schem_layout_row (whole-group centering) so
-    the entire small-subvolume/large-domain composition sits centered
-    inside the dashed box, with the left-object<->arrow and
-    arrow<->right-object gaps equal by construction."""
-    (sx0, sy0, sw, sh), (lx0, ly0, lw, lh) = schem_layout_row(ax, [0.17, 0.34])
-    ax_small = ax.inset_axes([sx0, sy0, sw, sh])
+    genuinely "small". Positioning is computed explicitly here (not via
+    schem_layout_row) so the whole [small subvolume]-[arrow]-[large
+    domain] span is centered directly on the schematic's true horizontal
+    middle (0.5): left_edge/right_edge bound the full composition, and
+    that span is centered at exactly x=0.5, with SCHEM_GAP symmetric on
+    both sides of the arrow. Object sizes are unchanged (0.17/0.34)."""
+    left_w, right_w = 0.17, 0.34
+    gap_zone = 2 * SCHEM_GAP + SCHEM_ARROW_LEN
+    total_extent = left_w + gap_zone + right_w
+    left_edge = 0.5 - total_extent / 2.0
+    y0 = SCHEM_VCENTER - SCHEM_BOX_H / 2.0
+
+    sx0 = left_edge
+    arrow_x0 = sx0 + left_w + SCHEM_GAP
+    arrow_x1 = arrow_x0 + SCHEM_ARROW_LEN
+    lx0 = arrow_x1 + SCHEM_GAP  # right_edge == lx0 + right_w, by construction
+
+    ax_small = ax.inset_axes([sx0, y0, left_w, SCHEM_BOX_H])
     ax_small.imshow(small_img, interpolation="bilinear")
     image_cell(ax_small, ANNOTATION_COLOR, lw=1.2)
-    ax_large = ax.inset_axes([lx0, ly0, lw, lh])
+    draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=SUBTEXT)
+    ax_large = ax.inset_axes([lx0, y0, right_w, SCHEM_BOX_H])
     ax_large.imshow(large_img, interpolation="bilinear")
     bx0, by0, bw, bh = 0.04, 0.04, 0.30, 0.30
     ax_large.plot([bx0, bx0, bx0 + bw, bx0 + bw, bx0], [by0, by0 + bh, by0 + bh, by0, by0],
                   color=ANNOTATION_COLOR, linewidth=1.6, transform=ax_large.transAxes,
                   solid_capstyle="round")
     image_cell(ax_large, SUBTEXT, lw=1.0)
-    helper_label(ax, sx0 + sw / 2.0, "small subvolume")
-    helper_label(ax, lx0 + lw / 2.0, "large domain")
+    helper_label(ax, sx0 + left_w / 2.0, "small subvolume")
+    helper_label(ax, lx0 + right_w / 2.0, "large domain")
 
 
 # ============================================================================
