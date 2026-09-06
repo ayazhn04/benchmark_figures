@@ -542,6 +542,28 @@ def schem_layout_row(ax, box_widths, box_h=SCHEM_BOX_H, arrows=True, arrow_color
     return boxes
 
 
+def schem_layout_row_arrow_centered(ax, box_widths, box_h=SCHEM_BOX_H, arrow_color=SUBTEXT):
+    """Two-box layout (used only by Multiscale and Large volume) that
+    centers the ARROW ITSELF at the schematic's horizontal middle (0.5),
+    rather than centering the two boxes' outer bounding box as
+    schem_layout_row does. When the two box widths differ a lot, the
+    outer-bounding-box centering used elsewhere still leaves the arrow
+    itself visibly drifted toward whichever box is wider (a wider box
+    pushes its far edge -- and thus the fixed-gap arrow beside it --
+    further from center); this fixes that by keeping SCHEM_GAP symmetric
+    around a fixed arrow position and letting the boxes' x-offsets absorb
+    the difference. Box widths/heights are never changed here -- only
+    their horizontal position -- and the arrow length is unchanged."""
+    left_w, right_w = box_widths
+    arrow_x0 = 0.5 - SCHEM_ARROW_LEN / 2.0
+    arrow_x1 = 0.5 + SCHEM_ARROW_LEN / 2.0
+    left_x0 = arrow_x0 - SCHEM_GAP - left_w
+    right_x0 = arrow_x1 + SCHEM_GAP
+    y0 = SCHEM_VCENTER - box_h / 2.0
+    draw_single_arrow(ax, arrow_x0, SCHEM_VCENTER, arrow_x1, SCHEM_VCENTER, color=arrow_color)
+    return [left_x0, y0, left_w, box_h], [right_x0, y0, right_w, box_h]
+
+
 CONNECTOR_ZORDER = -40  # above the white cards (-50) so nothing is clipped/hidden
 
 
@@ -688,8 +710,11 @@ def schem_multiscale(ax, large_img, small_img, crop_box_px):
     -- both real voxels of the already-loaded real representative volume
     (see choose_grounded_roi in prepare_multiscale for the ROI criterion).
     The ROI marker uses the neutral ANNOTATION_COLOR, never diffusion-
-    orange/GAN-purple."""
-    (lx0, ly0, lw, lh), (sx0, sy0, sw, sh) = schem_layout_row(ax, [0.40, 0.28])
+    orange/GAN-purple. Uses schem_layout_row_arrow_centered (not
+    schem_layout_row) so the arrow itself sits at the schematic's true
+    horizontal middle despite the two crops having different widths --
+    box sizes/aspect are unchanged, only their x-position."""
+    (lx0, ly0, lw, lh), (sx0, sy0, sw, sh) = schem_layout_row_arrow_centered(ax, [0.40, 0.28])
     ax_large = ax.inset_axes([lx0, ly0, lw, lh])
     ax_large.imshow(large_img, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     cx0, cy0, cw, ch = crop_box_px
@@ -842,14 +867,19 @@ def schem_large_volume(ax, small_img, large_img):
     """A small real crop of the reference 512^3 volume -> the full real
     reference volume rendered the same way, with a clearly visible
     ANNOTATION_COLOR wireframe bounding box on the large render marking
-    exactly where the small subvolume originates -- so the small-in-large
-    correspondence is explicit rather than two disconnected renders. The
-    small box is narrow, closer in visual scale to the Multiphase
-    schematic's isolated-phase cells, so it reads as genuinely "small"."""
-    (sx0, sy0, sw, sh), (lx0, ly0, lw, lh) = schem_layout_row(ax, [0.17, 0.34])
+    exactly where the small subvolume originates. The small subvolume's
+    own outline uses that SAME ANNOTATION_COLOR, so the two are visually
+    tied together as one explicit correspondence rather than two
+    disconnected renders. The small box is narrow, closer in visual scale
+    to the Multiphase schematic's isolated-phase cells, so it reads as
+    genuinely "small". Uses schem_layout_row_arrow_centered (not
+    schem_layout_row) so the arrow itself sits at the schematic's true
+    horizontal middle despite the two renders having different widths --
+    box sizes/aspect are unchanged, only their x-position."""
+    (sx0, sy0, sw, sh), (lx0, ly0, lw, lh) = schem_layout_row_arrow_centered(ax, [0.17, 0.34])
     ax_small = ax.inset_axes([sx0, sy0, sw, sh])
     ax_small.imshow(small_img, interpolation="bilinear")
-    image_cell(ax_small, SUBTEXT, lw=1.0)
+    image_cell(ax_small, ANNOTATION_COLOR, lw=1.2)
     ax_large = ax.inset_axes([lx0, ly0, lw, lh])
     ax_large.imshow(large_img, interpolation="bilinear")
     bx0, by0, bw, bh = 0.04, 0.04, 0.30, 0.30
