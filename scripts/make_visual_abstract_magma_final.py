@@ -16,6 +16,21 @@ their own main()/figure-saving pipeline) and called exactly as that
 section's own main() calls them. Nothing here reimplements or approximates
 that scientific logic.
 
+PATH BINDING: Sections 4.1-4.3 derive their own PROJECT from `__file__`,
+which is only correct when that section script runs standalone from its
+own checkout location. Once THIS script imports it as a module from a
+different project layout, that derivation resolves to the wrong root --
+confirmed by a real RA2 path audit. So immediately after import, this
+script explicitly rebinds each of those three modules' path-valued
+globals (PROJECT/ROOT/GROUP_DIRS/... etc.) to the exact RA2 roots in
+RA2_ROOTS below (see configure_section_paths()). Sections 4.4-4.7 already
+hardcode their own correct RA2 root inside the locked script and are left
+untouched -- only checked for agreement with RA2_ROOTS (see
+validate_section_paths()). A full preflight validates all seven tasks'
+authoritative inputs before any scientific loading or rendering starts,
+so a broken path on a later task is caught immediately rather than after
+earlier tasks already rendered.
+
 The only genuinely new drawing in this script is:
   (a) the hub-and-spoke page layout and card chrome (style-matched to
       Figures 4.1-4.7: BG/CARD_FACE/CARD_EDGE/GRID/SPINE/TEXT/SUBTEXT,
@@ -89,6 +104,25 @@ SECTION_SCRIPTS = {
     "multiphase": SCRIPTS_DIR / "make_fig4_5_composite_magma_final.py",
     "topology": SCRIPTS_DIR / "make_fig4_6_composite_magma_final.py",
     "large_volume": SCRIPTS_DIR / "make_fig4_7_composite_magma_final.py",
+}
+
+# Confirmed-on-RA2 authoritative project/data roots for each task. Sections
+# 4.1-4.3 originally derived PROJECT from `__file__`, which resolves wrong
+# once THIS script (not the section script itself) is the one importing
+# them -- so those three get their real path family rebound explicitly in
+# configure_section_paths() below. Sections 4.4-4.7 already hardcode their
+# own correct RA2 root inside the locked script; those are only checked for
+# agreement against this registry in validate_section_paths(), never
+# rebound. Never searched for broadly, never symlinked -- these are the
+# exact paths confirmed directly on RA2.
+RA2_ROOTS = {
+    "multiscale": Path("/home/ra2/4.1/poregen_drp471_4_1"),
+    "2d_to_3d": Path("/home/ra2/4.2/microlad_nmc_2d_to_3d"),
+    "super_resolution": Path("/home/ra2/4.3"),
+    "anisotropy": Path("/home/ra2/4_4_survol_glass_anisotropy_clean"),
+    "multiphase": Path("/home/ra2/4_5_microgen3d_muller128cube"),
+    "topology": Path("/home/ra2/4.6/poregen_topology_nmc128_ubuntu_ready_v2"),
+    "large_volume": Path("/home/ra2/section_4_7_transfer/section_4_7_transfer_package"),
 }
 
 TASK_TITLES = {
@@ -203,6 +237,151 @@ def import_section_module(name: str, path: Path):
     spec.loader.exec_module(module)
     log(f"[import:{name}] loaded module functions/constants from {path}")
     return module
+
+
+def configure_section_paths(key, module):
+    """Bind an imported Section 4.x module to its ACTUAL authoritative RA2
+    project/data root before any scientific file is loaded.
+
+    Sections 4.1-4.3 originally derive PROJECT from `__file__`, which is
+    correct only when that script itself is the one running from its own
+    checkout location -- once this visual-abstract script imports it from
+    a different directory, that derivation resolves to the wrong root. So
+    those three sections have their confirmed real path family rebound
+    here explicitly. Sections 4.4-4.7 already hardcode their own correct
+    RA2 root directly in the locked script; those are intentionally left
+    untouched here (see validate_section_paths, which checks them for
+    agreement with RA2_ROOTS instead of rebinding anything)."""
+    if key == "multiscale":
+        project = RA2_ROOTS["multiscale"]
+        root = project / "4.1_final_all_metrics_gan_best_vs_poregen"
+        module.PROJECT = project
+        module.ROOT = root
+        module.RESULTS = root / "results"
+        module.GROUP_DIRS = {
+            "real": root / "real_samples",
+            "poregen": root / "poregen_samples",
+            "gan_best": root / "gan_best_samples",
+        }
+        module.STAGE1_METRICS = (
+            root / "results" / "stage1_core_morphology_topology" / "stage1_per_sample_metrics.csv"
+        )
+        module.STAGE2_CURVES = (
+            root / "results" / "stage2_multiscale_curves" / "stage2_group_mean_curves.csv"
+        )
+        module.STAGE6_CURVES = (
+            root / "results" / "stage6_capillary_porosimetry"
+            / "stage6b_capillary_porosimetry_group_mean_curves.csv"
+        )
+        log(f"[configure:{key}] PROJECT={module.PROJECT}")
+        log(f"[configure:{key}] ROOT={module.ROOT}")
+
+    elif key == "2d_to_3d":
+        project = RA2_ROOTS["2d_to_3d"]
+        module.PROJECT = project
+        module.METRICS_DIR = project / "evaluation_4_2_results_all_metrics"
+        module.GROUP_VOLUME_DIRS = {
+            "real": project / "evaluation_4_2_all_metrics_inputs" / "real",
+            "microlad": project / "evaluation_4_2_all_metrics_inputs" / "diffusion",
+            "slicegan": project / "evaluation_4_2_all_metrics_inputs" / "gan",
+        }
+        log(f"[configure:{key}] PROJECT={module.PROJECT}")
+
+    elif key == "super_resolution":
+        project = RA2_ROOTS["super_resolution"]
+        module.PROJECT = project
+        module.RESSHIFT_ROOT = project / "resshift_superres_4_3"
+        module.HR_DIR = (
+            module.RESSHIFT_ROOT / "data" / "processed" / "2d_x4_sandstone" / "test50" / "hr"
+        )
+        module.LR_DIR = (
+            module.RESSHIFT_ROOT / "data" / "processed" / "2d_x4_sandstone" / "test50" / "lr"
+        )
+        module.RESSHIFT_DIR = (
+            module.RESSHIFT_ROOT / "outputs" / "samples" / "final_50_2d_resshift_release"
+        )
+        module.SURVOL_ROOT = project / "survol_gan_4_3"
+        module.SURVOL_DIR_EXPECTED = (
+            module.SURVOL_ROOT / "outputs" / "samples" / "survol_xy_selected_epoch7_test50"
+            / "predictions"
+        )
+        module.METRICS_DIR = project / "section43_superres_final_metrics"
+        module.EVALUATOR_PATH = module.METRICS_DIR / "section43_full_metrics_2d.py"
+        module.MAIN_TABLE_CSV = module.METRICS_DIR / "main_table_candidates.csv"
+        module.PER_IMAGE_CSV = module.METRICS_DIR / "per_image_metrics.csv"
+        log(f"[configure:{key}] PROJECT={module.PROJECT}")
+
+    else:
+        # Sections 4.4-4.7 already hardcode their own correct RA2 root
+        # inside the locked script -- validated below, never rebound.
+        log(f"[configure:{key}] no rebind needed (script already hardcodes its confirmed RA2 root)")
+
+
+def validate_section_paths(key, module):
+    """Return [(label, ok, path), ...] for this task's authoritative RA2
+    inputs. Never raises by itself -- main()'s preflight aggregates every
+    task's checks and raises exactly once, before any rendering, if
+    anything required is missing."""
+    checks = []
+
+    def chk(label, path):
+        p = Path(path)
+        checks.append((label, p.exists(), str(p)))
+
+    def chk_eq(label, actual, expected):
+        checks.append((label, Path(actual) == Path(expected), str(actual)))
+
+    if key == "multiscale":
+        chk("PROJECT", module.PROJECT)
+        chk("ROOT", module.ROOT)
+        chk("real", module.GROUP_DIRS["real"])
+        chk("diffusion", module.GROUP_DIRS["poregen"])
+        chk("gan", module.GROUP_DIRS["gan_best"])
+        chk("stage1", module.STAGE1_METRICS)
+
+    elif key == "2d_to_3d":
+        chk("PROJECT", module.PROJECT)
+        chk("real", module.GROUP_VOLUME_DIRS["real"])
+        chk("diffusion", module.GROUP_VOLUME_DIRS["microlad"])
+        chk("gan", module.GROUP_VOLUME_DIRS["slicegan"])
+
+    elif key == "super_resolution":
+        chk("PROJECT", module.PROJECT)
+        chk("hr", module.HR_DIR)
+        chk("lr", module.LR_DIR)
+        chk("resshift", module.RESSHIFT_DIR)
+        chk("survol", module.SURVOL_DIR_EXPECTED)
+        chk("per_image_csv", module.PER_IMAGE_CSV)
+
+    elif key == "anisotropy":
+        chk_eq("PROJECT", module.PROJECT, RA2_ROOTS["anisotropy"])
+        chk("real", module.GROUP_VOLUME_DIRS["real"])
+        chk("diffusion", module.GROUP_VOLUME_DIRS["diffusion"])
+        chk("gan", module.GROUP_VOLUME_DIRS["gan"])
+
+    elif key == "multiphase":
+        chk_eq("PROJECT", module.PROJECT, RA2_ROOTS["multiphase"])
+        chk("real", module.GROUP_VOLUME_DIRS["real"])
+        chk("diffusion", module.GROUP_VOLUME_DIRS["diffusion"])
+        chk("gan", module.GROUP_VOLUME_DIRS["gan"])
+
+    elif key == "topology":
+        chk_eq("PROJECT", module.PROJECT, RA2_ROOTS["topology"])
+        chk("real", module.GROUP_VOLUME_DIRS["real"])
+        chk("diffusion", module.GROUP_VOLUME_DIRS["diffusion"])
+        chk("gan", module.GROUP_VOLUME_DIRS["gan"])
+
+    elif key == "large_volume":
+        chk_eq("PACKAGE_ROOT", module.PACKAGE_ROOT, RA2_ROOTS["large_volume"])
+        chk("diffusion_folder", module.SAMPLE_DIRS_512["poredit"])
+        chk("gan_folder", module.SAMPLE_DIRS_512["survol"])
+        chk("diffusion_rep_file", module.REP_FILES["poredit"])
+        chk("gan_rep_file", module.REP_FILES["survol"])
+
+    else:
+        raise ValueError(f"unknown task key: {key}")
+
+    return checks
 
 
 def add_card(fig, xywh, lw=CARD_LW):
@@ -731,13 +910,46 @@ def main():
     log(f"[paths] REPO = {REPO}")
     log(f"[paths] OUT  = {OUT}")
 
+    # ---- Phase A: import + configure all seven Section modules -------------
+    modules = {}
+    for key in TOP_ROW + BOTTOM_ROW:
+        script_path = SECTION_SCRIPTS[key]
+        module = import_section_module(key, script_path)
+        configure_section_paths(key, module)
+        modules[key] = module
+
+    # ---- Phase B: validate EVERY task's authoritative RA2 inputs before ----
+    # any scientific loading/rendering starts, so a broken path on task 6 or
+    # 7 is caught immediately rather than after tasks 1-5 already rendered.
+    log("\n=== RA2 scientific-source preflight ===")
+    all_checks = {}
+    any_failed = False
+    for key in TOP_ROW + BOTTOM_ROW:
+        checks = validate_section_paths(key, modules[key])
+        all_checks[key] = checks
+        log(f"\n[{key}]")
+        for label, ok, path in checks:
+            status = "OK" if ok else "MISSING"
+            log(f"  {label:<18} {status:<7} {path}")
+            if not ok:
+                any_failed = True
+
+    if any_failed:
+        lines = ["RA2 source preflight FAILED.", "Missing:"]
+        for key, checks in all_checks.items():
+            for label, ok, path in checks:
+                if not ok:
+                    lines.append(f"  [{key}] {label}: {path}")
+        raise RuntimeError("\n".join(lines))
+
+    log(f"\nPRECHECK PASSED: all {len(TOP_ROW) + len(BOTTOM_ROW)} tasks\n")
+
+    # ---- Phase C: prepare/render all seven tasks ----------------------------
     tasks = {}
     audit_tasks = {}
     for key in TOP_ROW + BOTTOM_ROW:
-        script_path = SECTION_SCRIPTS[key]
-        log(f"\n=== task: {key}  (source script: {script_path.name}) ===")
-        module = import_section_module(key, script_path)
-        task = PREPARE_FUNCS[key](module)
+        log(f"\n=== task: {key}  (source script: {SECTION_SCRIPTS[key].name}) ===")
+        task = PREPARE_FUNCS[key](modules[key])
         tasks[key] = task
         log(f"[{key}] diffusion = '{task['diffusion']['label']}'  source = {task['diffusion']['source']}")
         log(f"[{key}] gan       = '{task['gan']['label']}'  source = {task['gan']['source']}")
@@ -785,8 +997,13 @@ def main():
     # =========================== AUDIT JSON ==================================
     metadata = {
         "script": Path(__file__).name,
+        "ra2_roots": {k: str(v) for k, v in RA2_ROOTS.items()},
         "section_scripts": {k: str(v) for k, v in SECTION_SCRIPTS.items()},
         "task_order": {"top_row": TOP_ROW, "bottom_row": BOTTOM_ROW},
+        "preflight": {
+            key: [{"label": label, "ok": ok, "path": path} for label, ok, path in checks]
+            for key, checks in all_checks.items()
+        },
         "tasks": audit_tasks,
         "saved": {"png": str(png), "pdf": str(pdf), "svg": str(svg)},
         "log": RUN_LOG,
